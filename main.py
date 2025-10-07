@@ -1581,10 +1581,10 @@ async def addrole(interaction: discord.Interaction, user: discord.Member, role: 
         await interaction.response.send_message("❌ No puedes asignar el rol @everyone.", ephemeral=True)
         return
     
-    if not has_higher_role(interaction.user, discord.Object(id=0)) and interaction.user.id != interaction.guild.owner_id:
-        if role >= interaction.user.top_role:
-            await interaction.response.send_message("❌ No puedes asignar un rol igual o superior al tuyo.", ephemeral=True)
-            return
+    # Evitar que un moderador asigne roles iguales o superiores a los suyos
+    if interaction.user.id != interaction.guild.owner_id and role >= interaction.user.top_role:
+        await interaction.response.send_message("❌ No puedes asignar un rol igual o superior al tuyo.", ephemeral=True)
+        return
     
     bot_member = interaction.guild.get_member(client.user.id)
     if role >= bot_member.top_role:
@@ -1639,10 +1639,10 @@ async def removerole(interaction: discord.Interaction, user: discord.Member, rol
         await interaction.response.send_message("❌ No puedes quitar el rol @everyone.", ephemeral=True)
         return
     
-    if not has_higher_role(interaction.user, discord.Object(id=0)) and interaction.user.id != interaction.guild.owner_id:
-        if role >= interaction.user.top_role:
-            await interaction.response.send_message("❌ No puedes quitar un rol igual o superior al tuyo.", ephemeral=True)
-            return
+    # Evitar que un moderador quite roles iguales o superiores a los suyos
+    if interaction.user.id != interaction.guild.owner_id and role >= interaction.user.top_role:
+        await interaction.response.send_message("❌ No puedes quitar un rol igual o superior al tuyo.", ephemeral=True)
+        return
     
     bot_member = interaction.guild.get_member(client.user.id)
     if role >= bot_member.top_role:
