@@ -4,6 +4,7 @@ import discord
 import sqlite3
 import asyncio
 import logging
+import google.generativeai as genai
 from pathlib import Path
 from contextlib import contextmanager
 from typing import Optional, Dict, Tuple
@@ -15,6 +16,7 @@ from mantener_vivo import mantener_vivo
 from datetime import datetime, timedelta, timezone
 
 # ----------------Configuración de Logging----------------#
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -402,6 +404,8 @@ if not token:
 
 mantener_vivo()
 
+genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+
 intents = discord.Intents.default()
 intents.messages = True
 intents.message_content = True
@@ -410,6 +414,15 @@ intents.guilds = True
 
 client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
+
+SYSTEM_PROMPT = (
+    "Eres una IA simpática, útil y con humor ligero. "
+    "Responde de forma clara, amistosa y con emojis cuando sea apropiado. "
+    "No uses lenguaje ofensivo ni hables de temas inapropiados."
+    "Estas en el servidor las tortuguitas de ezku, de un youtuber llamado ezku claramente, trata sobre linux, juegos, memes y social sempre responde teniendo de referencia esto, usando para referirse a un usuario el termino tortuguita"
+)
+
+active_chat_channels = set()
 
 # ------------------Funciones auxiliares------------------#
 
@@ -655,7 +668,7 @@ async def before_check_lockdowns():
     await client.wait_until_ready()
 
 # ------------------Comandos------------------#
-
+        
 # ------------------Comando de Ayuda------------------#
 
 @tree.command(name="help", description="Muestra todos los comandos disponibles")
@@ -727,6 +740,105 @@ async def help_command(interaction: discord.Interaction):
     embed.set_thumbnail(url=client.user.display_avatar.url)
     
     await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+
+#--------Comando para IA---------#
+@tree.command(
+    name="chat",
+    description="Habla con la IA integrada del bot"
+)
+@app_commands.describe(mensaje="Escribe lo que quieras decirle a la IA")
+async def chat(interaction: discord.Interaction, mensaje: str):
+    await interaction.response.defer()  # Permite tiempo para procesar la respuesta
+
+    try:
+        # Crear modelo
+        model = genai.GenerativeModel("gemini-1.5-flash")
+
+        # Construir prompt
+        full_prompt = f"{SYSTEM_PROMPT}\n\nUsuario: {mensaje}\nIA:"
+
+        # Generar respuesta
+        response = model.generate_content(full_prompt)
+
+        # Enviar la respuesta al canal
+        if response.text and response.text.strip():
+            await interaction.followup.send(response.text[:2000])
+        else:
+            await interaction.followup.send("🤔 No obtuve respuesta de la IA, intenta reformular tu mensaje.")
+
+    except Exception as e:
+        await interaction.followup.send(f"❌ Error al contactar con la IA: {e}")
+
+
+#---------chat en vivo---------#
+
+@tree.command(name="chatai", description="Activa o desactiva el modo chat IA en este canal (solo administradores)")
+@app_commands.describe(opcion="Elige 'activar' o 'desactivar' para este canal")
+@app_commands.choices(opcion=[
+    app_commands.Choice(name="activar", value="activar"),
+    app_commands.Choice(name="desactivar", value="desactivar"),
+])
+@app_commands.checks.has_permissions(administrator=True)  # 🔒 Solo admins
+async def chat(interaction: discord.Interaction, opcion: app_commands.Choice[str]):
+    channel_id = interaction.channel.id
+
+    if opcion.value == "activar":
+        active_chat_channels.add(channel_id)
+        await interaction.response.send_message("🤖 Modo chat IA activado en este canal.", ephemeral=True)
+    else:
+        active_chat_channels.discard(channel_id)
+        await interaction.response.send_message("😴 Modo chat IA desactivado en este canal.", ephemeral=True)
+
+
+# ⚠️ Manejo de error si alguien sin permisos intenta usarlo
+@chat.error
+async def chat_error(interaction: discord.Interaction, error):
+    if isinstance(error, app_commands.errors.MissingPermissions):
+        await interaction.response.send_message(
+            "🚫 No tienes permisos para usar este comando (solo administradores).",
+            ephemeral=True
+        )
+
+# --- Listener para responder mensajes ---
+@bot.event
+async def on_message(message):
+    # Ignorar mensajes del propio bot
+    if message.author == bot.user:
+        return
+
+    # Si el canal no está en modo IA, ignorar
+    if message.channel.id not in active_chat_channels:
+        return
+
+    # Opcional: ignorar mensajes con comandos o sin texto
+    if message.content.startswith("/") or not message.content.strip():
+        return
+
+    try:
+        # Crear modelo de Gemini
+        model = genai.GenerativeModel("gemini-1.5-flash")
+
+        # Crear prompt
+        prompt = f"{SYSTEM_PROMPT}\n\nUsuario: {message.content}\nIA:"
+
+        # Generar respuesta
+        response = model.generate_content(prompt)
+
+        # Enviar la respuesta
+        # Enviar la respuesta (con control si Gemini no devuelve nada)
+    if response.text and response.text.strip():
+        await message.reply(response.text[:1900])
+    else:
+        await message.reply("🤔 No obtuve respuesta de la IA, intenta reformular tu mensaje.")
+
+    except Exception as e:
+        await message.channel.send(f"❌ Error con la IA: {e}")
+
+    await bot.process_commands(message)
+
+#--------demas comandos---------#
 
 @tree.command(name="ping", description="Responde con Pong y muestra la latencia")
 async def ping(interaction: discord.Interaction):
