@@ -4,6 +4,7 @@ import discord
 import sqlite3
 import asyncio
 import logging
+import random
 import google.generativeai as genai
 
 from discord.ui import View, Button
@@ -406,8 +407,6 @@ if not token:
 
 mantener_vivo()
 
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-
 intents = discord.Intents.default()
 intents.messages = True
 intents.message_content = True
@@ -416,15 +415,6 @@ intents.guilds = True
 
 client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
-
-SYSTEM_PROMPT = (
-    "Eres una IA simpática, útil y con humor ligero. "
-    "Responde de forma clara, amistosa y con emojis cuando sea apropiado. "
-    "No uses lenguaje ofensivo ni hables de temas inapropiados."
-    "Estas en el servidor las tortuguitas de ezku, de un youtuber llamado ezku claramente, trata sobre linux, juegos, memes y social sempre responde teniendo de referencia esto, usando para referirse a un usuario el termino tortuguita"
-)
-
-active_chat_channels = set()
 
 # ------------------Funciones auxiliares------------------#
 
@@ -746,37 +736,159 @@ async def help_command(interaction: discord.Interaction):
 
 
 #--------Comando para IA---------#
+
+genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+
+SYSTEM_PROMPT = (
+    "Eres una IA simpática, útil y con humor ligero. "
+    "Responde de forma clara, amistosa y con emojis cuando sea apropiado. "
+    "No uses lenguaje ofensivo ni hables de temas inapropiados."
+    "Estas en el servidor las tortuguitas de ezku, de un youtuber llamado ezku claramente, trata sobre linux, juegos, memes y social sempre responde teniendo de referencia esto, usando para referirse a un usuario el termino tortuguita"
+)
+
+conversation_history = {}
+active_chat_channels = set()
+
 @tree.command(
     name="chat",
     description="Habla con la IA integrada del bot"
 )
 @app_commands.describe(mensaje="Escribe lo que quieras decirle a la IA")
 async def chat(interaction: discord.Interaction, mensaje: str):
-    await interaction.response.defer()  # Permite tiempo para procesar la respuesta
+    await interaction.response.defer()
 
     try:
-        # Crear modelo
+        # Obtener o crear historial del usuario
+        user_id = interaction.user.id
+        if user_id not in conversation_history:
+            conversation_history[user_id] = []
+        
+        # Crear modelo con historial
         model = genai.GenerativeModel("gemini-1.5-flash")
-
-        # Construir prompt
-        full_prompt = f"{SYSTEM_PROMPT}\n\nUsuario: {mensaje}\nIA:"
+        
+        # Agregar mensaje del usuario al historial
+        conversation_history[user_id].append(f"Usuario: {mensaje}")
+        
+        # Construir prompt con historial (últimos 10 mensajes)
+        recent_history = conversation_history[user_id][-10:]
+        full_prompt = f"{SYSTEM_PROMPT}\n\n" + "\n".join(recent_history) + "\nIA:"
 
         # Generar respuesta
         response = model.generate_content(full_prompt)
 
-        # Enviar la respuesta al canal
+        # Guardar respuesta en historial
         if response.text and response.text.strip():
-            await interaction.followup.send(response.text[:2000])
+            conversation_history[user_id].append(f"IA: {response.text}")
+            
+            # Limitar respuesta a 2000 caracteres de Discord
+            respuesta_texto = response.text[:2000]
+            await interaction.followup.send(respuesta_texto)
         else:
             await interaction.followup.send("🤔 No obtuve respuesta de la IA, intenta reformular tu mensaje.")
 
     except Exception as e:
         await interaction.followup.send(f"❌ Error al contactar con la IA: {e}")
 
+@tree.command(
+    name="limpiar_chat",
+    description="Limpia tu historial de conversación con la IA"
+)
+async def limpiar_chat(interaction: discord.Interaction):
+    user_id = interaction.user.id
+    if user_id in conversation_history:
+        conversation_history[user_id] = []
+        await interaction.response.send_message("🧹 Historial de conversación limpiado.", ephemeral=True)
+    else:
+        await interaction.response.send_message("No tienes historial que limpiar.", ephemeral=True)
+
+
+
+
+#chat en vivo
+
+
+
+
+@tree.command(
+    name="activar_chat",
+    description="Activa el chat de IA en este canal (Solo administradores)"
+)
+@app_commands.checks.has_permissions(administrator=True)
+async def activar_chat(interaction: discord.Interaction):
+    if interaction.channel_id in active_chat_channels:
+        await interaction.response.send_message(
+            "ℹ️ El chat de IA ya está activo en este canal.",
+            ephemeral=True
+        )
+        return
+    
+    active_chat_channels.add(interaction.channel_id)
+    await interaction.response.send_message(
+        f"✅ Chat de IA activado en {interaction.channel.mention}\n"
+        "Los usuarios ahora pueden usar `/chat` en este canal. 🐢",
+        ephemeral=False
+    )
+
+
+@tree.command(
+    name="desactivar_chat",
+    description="Desactiva el chat de IA en este canal (Solo administradores)"
+)
+@app_commands.checks.has_permissions(administrator=True)
+async def desactivar_chat(interaction: discord.Interaction):
+    if interaction.channel_id not in active_chat_channels:
+        await interaction.response.send_message(
+            "ℹ️ El chat de IA no está activo en este canal.",
+            ephemeral=True
+        )
+        return
+    
+    active_chat_channels.discard(interaction.channel_id)
+    await interaction.response.send_message(
+        f"❌ Chat de IA desactivado en {interaction.channel.mention}",
+        ephemeral=False
+    )
+
+
+@tree.command(
+    name="canales_chat",
+    description="Muestra los canales donde el chat de IA está activo"
+)
+async def canales_chat(interaction: discord.Interaction):
+    if not active_chat_channels:
+        await interaction.response.send_message(
+            "📭 No hay canales con el chat de IA activo.\n"
+            "Un administrador puede activarlo con `/activar_chat`",
+            ephemeral=True
+        )
+        return
+    
+    canales_texto = []
+    for channel_id in active_chat_channels:
+        canal = interaction.guild.get_channel(channel_id)
+        if canal:
+            canales_texto.append(f"• {canal.mention}")
+        else:
+            canales_texto.append(f"• ID: {channel_id} (canal eliminado)")
+    
+    embed = discord.Embed(
+        title="🐢 Canales con Chat de IA Activo",
+        description="\n".join(canales_texto),
+        color=discord.Color.green()
+    )
+    embed.set_footer(text=f"Total: {len(active_chat_channels)} canal(es)")
+    
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+
 
 #--------demas comandos---------#
 
+
 #ping pong pin
+
+
 @tree.command(name="ping", description="Responde con Pong y muestra la latencia")
 async def ping(interaction: discord.Interaction):
     """Comando ping mejorado con más información"""
@@ -803,10 +915,11 @@ async def ping(interaction: discord.Interaction):
     embed.set_footer(text=f"Solicitado por {interaction.user.name}")
     
     await interaction.response.send_message(embed=embed)
+    
 
 # Comando slash /saludo
 
-# Lista de saludos bonitos
+
 saludos = [
     "¡Hola {usuario}! 🌸 Que tu día esté lleno de sonrisas 😄✨",
     "¡Hey {usuario}! 🌟 Espero que tengas un día maravilloso 😎",
@@ -815,7 +928,6 @@ saludos = [
     "¡Qué gusto verte, {usuario}! 🌟 ¡Que hoy sea increíble! 😄"
 ]
 
-# Comando slash /saludo con saludos aleatorios
 @tree.command(name="saludo", description="Saluda a un usuario de manera divertida")
 @app_commands.describe(usuario="El usuario al que quieres saludar")
 async def saludo(interaction: discord.Interaction, usuario: discord.Member):
@@ -827,50 +939,119 @@ async def saludo(interaction: discord.Interaction, usuario: discord.Member):
         color=discord.Color.purple()
     )
     embed.set_thumbnail(url=usuario.display_avatar.url)
-    embed.set_footer(text=f"Saludado por {interaction.user.display_name}", icon_url=interaction.user.display_avatar.url)
+    embed.set_footer(
+        text=f"Saludado por {interaction.user.display_name}", 
+        icon_url=interaction.user.display_avatar.url
+    )
 
     await interaction.response.send_message(embed=embed)
 
-#comando para dados
+
+
+
+# Comando para dados
+
+
 @tree.command(name="tirardado", description="Lanza un dado de 6 caras")
 async def tirardado(interaction: discord.Interaction):
-    import random
     resultado = random.randint(1, 6)
-    await interaction.response.send_message(f"🎲 {interaction.user.mention} tiró el dado y salió **{resultado}**"
+    await interaction.response.send_message(
+        f"🎲 {interaction.user.mention} tiró el dado y salió **{resultado}**"
+    )
 
-#comando para cara o cruz
-tree.command(name="moneda", description="Lanza una moneda al aire")
+
+
+# Comando para cara o cruz 
+
+
+@tree.command(name="moneda", description="Lanza una moneda al aire")
 async def moneda(interaction: discord.Interaction):
-    import random
     resultado = random.choice(["Cara 🪙", "Cruz 🪙"])
-    await interaction.response.send_message(f"{interaction.user.mention} lanzó la moneda y salió **{resultado}**")
+    await interaction.response.send_message(
+        f"{interaction.user.mention} lanzó la moneda y salió **{resultado}**"
+    )
 
 
 
 #encuesta
+
+
+
 @tree.command(name="encuesta", description="Crea una encuesta sí/no")
 @app_commands.describe(pregunta="Pregunta para la encuesta")
 async def encuesta(interaction: discord.Interaction, pregunta: str):
     class EncuestaView(View):
         def __init__(self):
-            super().__init__()
+            super().__init__(timeout=None)
             self.resultado = {"Sí": 0, "No": 0}
+            self.votantes = set()
+
+        async def actualizar_mensaje(self, inter: discord.Interaction):
+            await inter.response.edit_message(
+                content=f"📊 **Encuesta:** {pregunta}\n\n✅ Sí: {self.resultado['Sí']} | ❌ No: {self.resultado['No']}\n\n*Votos totales: {len(self.votantes)}*",
+                view=self
+            )
 
         @discord.ui.button(label="Sí", style=discord.ButtonStyle.green)
-        async def si(self, button: Button, inter: discord.Interaction):
+        async def si(self, inter: discord.Interaction, button: Button):
+            if inter.user.id in self.votantes:
+                await inter.response.send_message("Ya has votado en esta encuesta.", ephemeral=True)
+                return
+            
+            self.votantes.add(inter.user.id)
             self.resultado["Sí"] += 1
-            await inter.response.edit_message(content=f"✅ Sí: {self.resultado['Sí']} | ❌ No: {self.resultado['No']}", view=self)
+            await self.actualizar_mensaje(inter)
 
         @discord.ui.button(label="No", style=discord.ButtonStyle.red)
-        async def no(self, button: Button, inter: discord.Interaction):
+        async def no(self, inter: discord.Interaction, button: Button):
+            if inter.user.id in self.votantes:
+                await inter.response.send_message("Ya has votado en esta encuesta.", ephemeral=True)
+                return
+            
+            self.votantes.add(inter.user.id)
             self.resultado["No"] += 1
-            await inter.response.edit_message(content=f"✅ Sí: {self.resultado['Sí']} | ❌ No: {self.resultado['No']}", view=self)
+            await self.actualizar_mensaje(inter)
 
-    await interaction.response.send_message(f"📊 **Encuesta:** {pregunta}", view=EncuestaView())
+        @discord.ui.button(label="Ver resultados", style=discord.ButtonStyle.gray)
+        async def resultados(self, inter: discord.Interaction, button: Button):
+            total = self.resultado["Sí"] + self.resultado["No"]
+            if total == 0:
+                porcentaje_si = 0
+                porcentaje_no = 0
+            else:
+                porcentaje_si = (self.resultado["Sí"] / total) * 100
+                porcentaje_no = (self.resultado["No"] / total) * 100
+            
+            embed = discord.Embed(
+                title="📊 Resultados de la encuesta",
+                description=f"**{pregunta}**",
+                color=discord.Color.blue()
+            )
+            embed.add_field(
+                name="✅ Sí", 
+                value=f"{self.resultado['Sí']} votos ({porcentaje_si:.1f}%)", 
+                inline=True
+            )
+            embed.add_field(
+                name="❌ No", 
+                value=f"{self.resultado['No']} votos ({porcentaje_no:.1f}%)", 
+                inline=True
+            )
+            embed.set_footer(text=f"Total de votantes: {len(self.votantes)}")
+            
+            await inter.response.send_message(embed=embed, ephemeral=True)
+
+    await interaction.response.send_message(
+        f"📊 **Encuesta:** {pregunta}\n\n✅ Sí: 0 | ❌ No: 0\n\n*Votos totales: 0*", 
+        view=EncuestaView()
+    )
 
 
 
 # ------------------Comandos de Moderación------------------#
+
+
+
 
 @tree.command(name="warn", description="Advierte a un usuario (configurable en /config)")
 @app_commands.checks.cooldown(1, 10.0, key=lambda i: i.user.id)
