@@ -802,7 +802,7 @@ async def chat_error(interaction: discord.Interaction, error):
         )
 
 # --- Listener para responder mensajes ---
-@bot.event
+@client.event
 async def on_message(message):
     # Ignorar mensajes del propio bot
     if message.author == bot.user:
