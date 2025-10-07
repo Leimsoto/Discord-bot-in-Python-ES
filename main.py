@@ -828,10 +828,10 @@ async def on_message(message):
 
         # Enviar la respuesta
         # Enviar la respuesta (con control si Gemini no devuelve nada)
-    if response.text and response.text.strip():
-        await message.reply(response.text[:1900])
-    else:
-        await message.reply("🤔 No obtuve respuesta de la IA, intenta reformular tu mensaje.")
+        if response.text and response.text.strip():
+            await message.reply(response.text[:1900])
+        else:
+            await message.reply("🤔 No obtuve respuesta de la IA, intenta reformular tu mensaje.")
 
     except Exception as e:
         await message.channel.send(f"❌ Error con la IA: {e}")
