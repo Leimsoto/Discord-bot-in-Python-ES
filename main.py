@@ -5,6 +5,8 @@ import sqlite3
 import asyncio
 import logging
 import google.generativeai as genai
+
+from discord.ui import View, Button
 from pathlib import Path
 from contextlib import contextmanager
 from typing import Optional, Dict, Tuple
@@ -774,6 +776,7 @@ async def chat(interaction: discord.Interaction, mensaje: str):
 
 #--------demas comandos---------#
 
+#ping pong pin
 @tree.command(name="ping", description="Responde con Pong y muestra la latencia")
 async def ping(interaction: discord.Interaction):
     """Comando ping mejorado con más información"""
@@ -800,6 +803,72 @@ async def ping(interaction: discord.Interaction):
     embed.set_footer(text=f"Solicitado por {interaction.user.name}")
     
     await interaction.response.send_message(embed=embed)
+
+# Comando slash /saludo
+
+# Lista de saludos bonitos
+saludos = [
+    "¡Hola {usuario}! 🌸 Que tu día esté lleno de sonrisas 😄✨",
+    "¡Hey {usuario}! 🌟 Espero que tengas un día maravilloso 😎",
+    "¡Saludos, {usuario}! 🌈 Que la alegría te acompañe hoy y siempre 😺",
+    "¡Hola {usuario}! 💖 Disfruta de cada momento de este día tan especial 🌸",
+    "¡Qué gusto verte, {usuario}! 🌟 ¡Que hoy sea increíble! 😄"
+]
+
+# Comando slash /saludo con saludos aleatorios
+@tree.command(name="saludo", description="Saluda a un usuario de manera divertida")
+@app_commands.describe(usuario="El usuario al que quieres saludar")
+async def saludo(interaction: discord.Interaction, usuario: discord.Member):
+    mensaje = random.choice(saludos).format(usuario=usuario.mention)
+
+    embed = discord.Embed(
+        title="🌸 ¡Saludo especial! 🌸",
+        description=mensaje,
+        color=discord.Color.purple()
+    )
+    embed.set_thumbnail(url=usuario.display_avatar.url)
+    embed.set_footer(text=f"Saludado por {interaction.user.display_name}", icon_url=interaction.user.display_avatar.url)
+
+    await interaction.response.send_message(embed=embed)
+
+#comando para dados
+@tree.command(name="tirardado", description="Lanza un dado de 6 caras")
+async def tirardado(interaction: discord.Interaction):
+    import random
+    resultado = random.randint(1, 6)
+    await interaction.response.send_message(f"🎲 {interaction.user.mention} tiró el dado y salió **{resultado}**"
+
+#comando para cara o cruz
+tree.command(name="moneda", description="Lanza una moneda al aire")
+async def moneda(interaction: discord.Interaction):
+    import random
+    resultado = random.choice(["Cara 🪙", "Cruz 🪙"])
+    await interaction.response.send_message(f"{interaction.user.mention} lanzó la moneda y salió **{resultado}**")
+
+
+
+#encuesta
+@tree.command(name="encuesta", description="Crea una encuesta sí/no")
+@app_commands.describe(pregunta="Pregunta para la encuesta")
+async def encuesta(interaction: discord.Interaction, pregunta: str):
+    class EncuestaView(View):
+        def __init__(self):
+            super().__init__()
+            self.resultado = {"Sí": 0, "No": 0}
+
+        @discord.ui.button(label="Sí", style=discord.ButtonStyle.green)
+        async def si(self, button: Button, inter: discord.Interaction):
+            self.resultado["Sí"] += 1
+            await inter.response.edit_message(content=f"✅ Sí: {self.resultado['Sí']} | ❌ No: {self.resultado['No']}", view=self)
+
+        @discord.ui.button(label="No", style=discord.ButtonStyle.red)
+        async def no(self, button: Button, inter: discord.Interaction):
+            self.resultado["No"] += 1
+            await inter.response.edit_message(content=f"✅ Sí: {self.resultado['Sí']} | ❌ No: {self.resultado['No']}", view=self)
+
+    await interaction.response.send_message(f"📊 **Encuesta:** {pregunta}", view=EncuestaView())
+
+
 
 # ------------------Comandos de Moderación------------------#
 
