@@ -1,3 +1,4 @@
+PyNaCl
 google-generativeai
 aiohappyeyeballs==2.6.1
 aiohttp==3.13.0
