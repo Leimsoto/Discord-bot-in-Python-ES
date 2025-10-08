@@ -2847,6 +2847,504 @@ async def modlogs(interaction: discord.Interaction, user: discord.Member, limit:
 
 
 
+#------------------Comandos para mensajes----------------------#
+
+
+
+
+
+
+
+
+# ------------------Sistema de Creación de Embeds Interactivo------------------#
+
+
+
+
+
+class EmbedBuilderModal(Modal, title="Constructor de Embed"):
+    """Modal para capturar información del embed"""
+    
+    def __init__(self, embed_data: dict = None):
+        super().__init__()
+        embed_data = embed_data or {}
+        
+        self.title_input = TextInput(
+            label="Título del Embed",
+            placeholder="Escribe el título aquí...",
+            default=embed_data.get('title', ''),
+            required=False,
+            max_length=256
+        )
+        
+        self.description_input = TextInput(
+            label="Descripción",
+            placeholder="Escribe la descripción aquí...",
+            style=discord.TextStyle.paragraph,
+            default=embed_data.get('description', ''),
+            required=False,
+            max_length=4000
+        )
+        
+        self.color_input = TextInput(
+            label="Color (hex sin #)",
+            placeholder="Ejemplo: FF5733 o blue, red, green",
+            default=embed_data.get('color', ''),
+            required=False,
+            max_length=10
+        )
+        
+        self.footer_input = TextInput(
+            label="Footer (texto del pie)",
+            placeholder="Texto del pie de página...",
+            default=embed_data.get('footer', ''),
+            required=False,
+            max_length=2048
+        )
+        
+        self.thumbnail_input = TextInput(
+            label="URL de imagen miniatura",
+            placeholder="https://ejemplo.com/imagen.png",
+            default=embed_data.get('thumbnail', ''),
+            required=False,
+            max_length=200
+        )
+        
+        self.add_item(self.title_input)
+        self.add_item(self.description_input)
+        self.add_item(self.color_input)
+        self.add_item(self.footer_input)
+        self.add_item(self.thumbnail_input)
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+
+class FieldModal(Modal, title="Agregar Campo"):
+    """Modal para agregar campos al embed"""
+    
+    field_name = TextInput(
+        label="Nombre del campo",
+        placeholder="Título del campo...",
+        max_length=256,
+        required=True
+    )
+    
+    field_value = TextInput(
+        label="Valor del campo",
+        placeholder="Contenido del campo...",
+        style=discord.TextStyle.paragraph,
+        max_length=1024,
+        required=True
+    )
+    
+    field_inline = TextInput(
+        label="En línea? (yes/no)",
+        placeholder="yes para mostrar en línea, no para ocupar fila completa",
+        default="yes",
+        max_length=3,
+        required=False
+    )
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+
+class ImageModal(Modal, title="Configurar Imágenes"):
+    """Modal para configurar imágenes del embed"""
+    
+    image_url = TextInput(
+        label="URL de imagen principal",
+        placeholder="https://ejemplo.com/imagen.png",
+        required=False,
+        max_length=200
+    )
+    
+    author_name = TextInput(
+        label="Nombre del autor",
+        placeholder="Nombre que aparecerá arriba del embed",
+        required=False,
+        max_length=256
+    )
+    
+    author_icon = TextInput(
+        label="Icono del autor (URL)",
+        placeholder="https://ejemplo.com/icono.png",
+        required=False,
+        max_length=200
+    )
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+
+class EmbedBuilderView(View):
+    """Vista con botones para construir el embed"""
+    
+    def __init__(self, author_id: int):
+        super().__init__(timeout=300)  # 5 minutos
+        self.author_id = author_id
+        self.embed_data = {
+            'title': '',
+            'description': '',
+            'color': '',
+            'footer': '',
+            'thumbnail': '',
+            'image': '',
+            'author_name': '',
+            'author_icon': '',
+            'fields': []
+        }
+    
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        """Verifica que solo el creador pueda usar los botones"""
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message(
+                "❌ Solo quien ejecutó el comando puede usar estos botones.",
+                ephemeral=True
+            )
+            return False
+        return True
+    
+    def parse_color(self, color_str: str) -> discord.Color:
+        """Convierte string de color a discord.Color"""
+        color_str = color_str.strip().lower()
+        
+        # Colores predefinidos
+        color_map = {
+            'red': discord.Color.red(),
+            'blue': discord.Color.blue(),
+            'green': discord.Color.green(),
+            'yellow': discord.Color.yellow(),
+            'orange': discord.Color.orange(),
+            'purple': discord.Color.purple(),
+            'gold': discord.Color.gold(),
+            'teal': discord.Color.teal(),
+            'dark_blue': discord.Color.dark_blue(),
+            'dark_green': discord.Color.dark_green(),
+            'dark_red': discord.Color.dark_red(),
+            'magenta': discord.Color.magenta(),
+        }
+        
+        if color_str in color_map:
+            return color_map[color_str]
+        
+        # Hex color
+        try:
+            color_str = color_str.replace('#', '')
+            return discord.Color(int(color_str, 16))
+        except:
+            return discord.Color.blue()
+    
+    def build_embed(self) -> discord.Embed:
+        """Construye el embed con los datos actuales"""
+        color = self.parse_color(self.embed_data['color']) if self.embed_data['color'] else discord.Color.blue()
+        
+        embed = discord.Embed(
+            title=self.embed_data['title'] or None,
+            description=self.embed_data['description'] or None,
+            color=color,
+            timestamp=datetime.now(timezone.utc)
+        )
+        
+        if self.embed_data['author_name']:
+            embed.set_author(
+                name=self.embed_data['author_name'],
+                icon_url=self.embed_data['author_icon'] if self.embed_data['author_icon'] else None
+            )
+        
+        if self.embed_data['thumbnail']:
+            try:
+                embed.set_thumbnail(url=self.embed_data['thumbnail'])
+            except:
+                pass
+        
+        if self.embed_data['image']:
+            try:
+                embed.set_image(url=self.embed_data['image'])
+            except:
+                pass
+        
+        for field in self.embed_data['fields']:
+            embed.add_field(
+                name=field['name'],
+                value=field['value'],
+                inline=field['inline']
+            )
+        
+        if self.embed_data['footer']:
+            embed.set_footer(text=self.embed_data['footer'])
+        
+        return embed
+    
+    @discord.ui.button(label="📝 Editar Base", style=discord.ButtonStyle.primary, row=0)
+    async def edit_base(self, interaction: discord.Interaction, button: Button):
+        """Editar título, descripción, color, footer y thumbnail"""
+        modal = EmbedBuilderModal(self.embed_data)
+        await interaction.response.send_modal(modal)
+        await modal.wait()
+        
+        # Actualizar datos
+        self.embed_data['title'] = modal.title_input.value
+        self.embed_data['description'] = modal.description_input.value
+        self.embed_data['color'] = modal.color_input.value
+        self.embed_data['footer'] = modal.footer_input.value
+        self.embed_data['thumbnail'] = modal.thumbnail_input.value
+        
+        # Actualizar preview
+        preview_embed = self.build_embed()
+        await interaction.edit_original_response(embed=preview_embed, view=self)
+    
+    @discord.ui.button(label="➕ Agregar Campo", style=discord.ButtonStyle.success, row=0)
+    async def add_field(self, interaction: discord.Interaction, button: Button):
+        """Agregar un campo al embed"""
+        if len(self.embed_data['fields']) >= 25:
+            await interaction.response.send_message(
+                "❌ Has alcanzado el límite máximo de 25 campos.",
+                ephemeral=True
+            )
+            return
+        
+        modal = FieldModal()
+        await interaction.response.send_modal(modal)
+        await modal.wait()
+        
+        inline = modal.field_inline.value.lower() in ['yes', 'y', 'si', 'sí', 'true', '1']
+        
+        self.embed_data['fields'].append({
+            'name': modal.field_name.value,
+            'value': modal.field_value.value,
+            'inline': inline
+        })
+        
+        # Actualizar preview
+        preview_embed = self.build_embed()
+        await interaction.edit_original_response(embed=preview_embed, view=self)
+    
+    @discord.ui.button(label="🗑️ Quitar Último Campo", style=discord.ButtonStyle.danger, row=0)
+    async def remove_field(self, interaction: discord.Interaction, button: Button):
+        """Eliminar el último campo agregado"""
+        if not self.embed_data['fields']:
+            await interaction.response.send_message(
+                "❌ No hay campos para eliminar.",
+                ephemeral=True
+            )
+            return
+        
+        removed = self.embed_data['fields'].pop()
+        await interaction.response.send_message(
+            f"✅ Campo eliminado: **{removed['name']}**",
+            ephemeral=True
+        )
+        
+        # Actualizar preview
+        preview_embed = self.build_embed()
+        await interaction.edit_original_response(embed=preview_embed, view=self)
+    
+    @discord.ui.button(label="🖼️ Imágenes/Autor", style=discord.ButtonStyle.secondary, row=1)
+    async def add_images(self, interaction: discord.Interaction, button: Button):
+        """Configurar imagen principal y autor"""
+        modal = ImageModal()
+        await interaction.response.send_modal(modal)
+        await modal.wait()
+        
+        self.embed_data['image'] = modal.image_url.value
+        self.embed_data['author_name'] = modal.author_name.value
+        self.embed_data['author_icon'] = modal.author_icon.value
+        
+        # Actualizar preview
+        preview_embed = self.build_embed()
+        await interaction.edit_original_response(embed=preview_embed, view=self)
+    
+    @discord.ui.button(label="📤 Enviar Embed", style=discord.ButtonStyle.success, row=1)
+    async def send_embed(self, interaction: discord.Interaction, button: Button):
+        """Enviar el embed al canal"""
+        if not self.embed_data['title'] and not self.embed_data['description']:
+            await interaction.response.send_message(
+                "❌ El embed debe tener al menos un título o descripción.",
+                ephemeral=True
+            )
+            return
+        
+        final_embed = self.build_embed()
+        
+        # Enviar embed al canal
+        await interaction.channel.send(embed=final_embed)
+        
+        await interaction.response.send_message(
+            "✅ Embed enviado correctamente al canal!",
+            ephemeral=True
+        )
+        
+        # Deshabilitar todos los botones
+        for item in self.children:
+            item.disabled = True
+        
+        await interaction.message.edit(view=self)
+        self.stop()
+    
+    @discord.ui.button(label="📋 Ver JSON", style=discord.ButtonStyle.secondary, row=1)
+    async def view_json(self, interaction: discord.Interaction, button: Button):
+        """Mostrar el JSON del embed"""
+        embed_dict = self.build_embed().to_dict()
+        json_str = json.dumps(embed_dict, indent=2, ensure_ascii=False)
+        
+        if len(json_str) > 1900:
+            await interaction.response.send_message(
+                f"```json\n{json_str[:1900]}...\n```\n*(JSON truncado por longitud)*",
+                ephemeral=True
+            )
+        else:
+            await interaction.response.send_message(
+                f"```json\n{json_str}\n```",
+                ephemeral=True
+            )
+    
+    @discord.ui.button(label="❌ Cancelar", style=discord.ButtonStyle.danger, row=1)
+    async def cancel(self, interaction: discord.Interaction, button: Button):
+        """Cancelar la creación del embed"""
+        await interaction.response.send_message(
+            "❌ Creación de embed cancelada.",
+            ephemeral=True
+        )
+        
+        # Deshabilitar todos los botones
+        for item in self.children:
+            item.disabled = True
+        
+        await interaction.message.edit(view=self)
+        self.stop()
+    
+    async def on_timeout(self):
+        """Cuando expira el tiempo"""
+        for item in self.children:
+            item.disabled = True
+        
+        try:
+            await self.message.edit(
+                content="⏰ Tiempo de edición expirado. Usa `/createembed` para crear uno nuevo.",
+                view=self
+            )
+        except:
+            pass
+
+
+
+
+
+
+# ------------------Comando /embed, para creación de mebds directos en chat------------------#
+
+
+
+
+
+@tree.command(name="createembed", description="Crea un embed personalizado de forma interactiva")
+async def createembed(interaction: discord.Interaction):
+    """Comando para crear embeds de forma interactiva"""
+    if not interaction.user.guild_permissions.manage_messages:
+        await interaction.response.send_message(
+            "❌ Necesitas permisos para gestionar mensajes para usar este comando.",
+            ephemeral=True
+        )
+        return
+    
+    # Embed inicial de bienvenida
+    welcome_embed = discord.Embed(
+        title="🎨 Constructor de Embed Interactivo",
+        description=(
+            "¡Bienvenido al constructor de embeds!\n\n"
+            "**Usa los botones para:**\n"
+            "📝 **Editar Base** - Título, descripción, color, footer y thumbnail\n"
+            "➕ **Agregar Campo** - Añade campos al embed (máx. 25)\n"
+            "🗑️ **Quitar Campo** - Elimina el último campo\n"
+            "🖼️ **Imágenes/Autor** - Configura imagen principal y autor\n"
+            "📤 **Enviar Embed** - Publica el embed en este canal\n"
+            "📋 **Ver JSON** - Muestra el código JSON del embed\n"
+            "❌ **Cancelar** - Cancela la creación\n\n"
+            "*Este preview se actualizará conforme edites el embed*"
+        ),
+        color=discord.Color.blue(),
+        timestamp=datetime.now(timezone.utc)
+    )
+    welcome_embed.set_footer(text="Tienes 5 minutos para completar el embed")
+    
+    # Crear vista con botones
+    view = EmbedBuilderView(interaction.user.id)
+    
+    await interaction.response.send_message(
+        embed=welcome_embed,
+        view=view,
+        ephemeral=True
+    )
+    
+    # Guardar el mensaje para poder editarlo después
+    view.message = await interaction.original_response()
+
+
+
+
+
+
+# ------------------/embedformjson, para embed por codigo------------------#
+
+
+
+
+
+
+
+@tree.command(name="embedfromjson", description="Crea un embed desde código JSON")
+@app_commands.describe(json_code="Código JSON del embed")
+async def embedfromjson(interaction: discord.Interaction, json_code: str):
+    """Crea un embed directamente desde JSON"""
+    if not interaction.user.guild_permissions.manage_messages:
+        await interaction.response.send_message(
+            "❌ Necesitas permisos para gestionar mensajes para usar este comando.",
+            ephemeral=True
+        )
+        return
+    
+    try:
+        # Limpiar el JSON
+        json_code = json_code.strip()
+        if json_code.startswith('```'):
+            json_code = json_code.split('```')[1]
+            if json_code.startswith('json'):
+                json_code = json_code[4:]
+        
+        # Parsear JSON
+        embed_dict = json.loads(json_code)
+        
+        # Crear embed
+        embed = discord.Embed.from_dict(embed_dict)
+        
+        # Enviar
+        await interaction.channel.send(embed=embed)
+        await interaction.response.send_message("✅ Embed creado desde JSON!", ephemeral=True)
+        
+    except json.JSONDecodeError as e:
+        await interaction.response.send_message(
+            f"❌ Error al parsear JSON: {str(e)}\n"
+            "Asegúrate de que el formato sea correcto.",
+            ephemeral=True
+        )
+    except Exception as e:
+        await interaction.response.send_message(
+            f"❌ Error al crear embed: {str(e)}",
+            ephemeral=True
+        )
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 # ------------------Comandos de Configuración------------------#
@@ -3022,53 +3520,41 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
         )
     elif isinstance(error, app_commands.MissingPermissions):
         await interaction.response.send_message(
-            f"❌ Te faltan permisos para ejecutar este comando: {', '.join(error.missing_permissions)}",
+            f"✖️ Te faltan permisos para ejecutar este comando: {', '.join(error.missing_permissions)}",
             ephemeral=True
         )
     elif isinstance(error, app_commands.BotMissingPermissions):
         await interaction.response.send_message(
-            f"❌ El bot no tiene los permisos necesarios: {', '.join(error.missing_permissions)}",
+            f"✖️ El bot no tiene los permisos necesarios: {', '.join(error.missing_permissions)}",
             ephemeral=True
         )
     elif isinstance(error, app_commands.CheckFailure):
         await interaction.response.send_message(
-            "❌ No tienes permiso para usar este comando.",
+            "✖️ No tienes permiso para usar este comando.",
             ephemeral=True
         )
     else:
-        logger.error(f"Error en comando: {error}", exc_info=True)
+        logger.error(f"✖️ Error en comando: {error}", exc_info=True)
         
         if not interaction.response.is_done():
             await interaction.response.send_message(
-                "❌ Ocurrió un error inesperado al ejecutar el comando.",
+                "✖️ Ocurrió un error inesperado al ejecutar el comando.",
                 ephemeral=True
             )
         else:
             await interaction.followup.send(
-                "❌ Ocurrió un error inesperado al ejecutar el comando.",
+                "✖️ Ocurrió un error inesperado al ejecutar el comando.",
                 ephemeral=True
             )
 
-
-
-
-
-
-# ------------------Ejecuta el bot------------------#
-
-
-
-
-
-
-
+# ------------------flujo para arrancar el bot xd------------------#
 
 try:
-    logger.info("🚀 Iniciando bot...")
+    logger.info("Iniciando bot...(0w0) ")
     client.run(token)
 except discord.LoginFailure:
-    logger.critical("❌ Token inválido. Verifica tu archivo .env")
+    logger.critical("Error: Token inválido. Verifica tu archivo .env")
 except KeyboardInterrupt:
-    logger.info("👋 Bot detenido manualmente")
+    logger.info("Bot detenido")
 except Exception as e:
-    logger.critical(f"❌ Error crítico al iniciar el bot: {e}", exc_info=True)
+    logger.critical(f"Error crítico al iniciar el bot: {e}", exc_info=True)
