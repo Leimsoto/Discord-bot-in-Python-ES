@@ -2980,7 +2980,7 @@ class EmbedBuilderView(View):
     """Vista con botones para construir el embed"""
     
     def __init__(self, author_id: int):
-        super().__init__(timeout=300)  # 5 minutos
+        super().__init__(timeout=1200)  # 20 minutos
         self.author_id = author_id
         self.embed_data = {
             'title': '',
@@ -3178,7 +3178,7 @@ class EmbedBuilderView(View):
         for item in self.children:
             item.disabled = True
         
-        await interaction.message.edit(view=self)
+        await interaction.edit_original_response(view=self)
         self.stop()
     
     @discord.ui.button(label="📋 Ver JSON", style=discord.ButtonStyle.secondary, row=1)
@@ -3210,7 +3210,7 @@ class EmbedBuilderView(View):
         for item in self.children:
             item.disabled = True
         
-        await interaction.message.edit(view=self)
+        await interaction.edit_original_response(view=self)
         self.stop()
     
     async def on_timeout(self):
@@ -3265,7 +3265,7 @@ async def createembed(interaction: discord.Interaction):
         color=discord.Color.blue(),
         timestamp=datetime.now(timezone.utc)
     )
-    welcome_embed.set_footer(text="Tienes 5 minutos para completar el embed")
+    welcome_embed.set_footer(text="Tienes 20 minutos para completar el embed")
     
     # Crear vista con botones
     view = EmbedBuilderView(interaction.user.id)
@@ -3277,7 +3277,7 @@ async def createembed(interaction: discord.Interaction):
     )
     
     # Guardar el mensaje para poder editarlo después
-    view.message = await interaction.original_response()
+    #view.message = await interaction.original_response()
 
 
 
