@@ -764,7 +764,7 @@ async def chat(interaction: discord.Interaction, mensaje: str):
             conversation_history[user_id] = []
         
         # Crear modelo con historial
-        model = genai.GenerativeModel("gemini-1.5-flash")
+        model = genai.GenerativeModel("gemini-2.5-flash")
         
         # Agregar mensaje del usuario al historial
         conversation_history[user_id].append(f"Usuario: {mensaje}")
