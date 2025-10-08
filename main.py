@@ -1,4 +1,5 @@
 # Importamos las librerías necesarias
+import json
 import os
 import discord
 import sqlite3
@@ -7,7 +8,7 @@ import logging
 import random
 import google.generativeai as genai
 
-from discord.ui import View, Button
+from discord.ui import View, Button, Modal, TextInput
 from pathlib import Path
 from contextlib import contextmanager
 from typing import Optional, Dict, Tuple
