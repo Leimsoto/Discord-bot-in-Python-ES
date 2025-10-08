@@ -18,7 +18,13 @@ from dotenv import load_dotenv
 from mantener_vivo import mantener_vivo
 from datetime import datetime, timedelta, timezone
 
+
+
+
 # ----------------Configuración de Logging----------------#
+
+
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -30,7 +36,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger('DiscordBot')
 
+
+
+
 # ----------------Base de datos----------------#
+
+
+
+
 BASE_DIR = Path(__file__).parent
 DB_PATH = BASE_DIR / 'warns_de_usuario.db'
 
@@ -101,7 +114,7 @@ def create_based():
             )
         ''')
         
-        # Crear índices para optimización
+        # índices para optimización
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_user_guild ON users_per_guild(user_id, guild_id)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_mute_active ON users_per_guild(mute_start) WHERE mute_start IS NOT NULL')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_lockdown_active ON lockdowns(lockdown_start) WHERE lockdown_start IS NOT NULL')
@@ -111,7 +124,15 @@ def create_based():
 
 create_based()
 
+
+
+
+
 # ----------------Funciones de Base de Datos----------------#
+
+
+
+
 
 def get_warns(user_id: int, guild_id: int) -> int:
     """Obtiene y actualiza los warns de un usuario de forma segura"""
@@ -402,8 +423,8 @@ load_dotenv()
 token = os.getenv("token")
 
 if not token:
-    logger.critical("❌ No se encontró el token en el archivo .env")
-    raise ValueError("❌ No se encontró el token en el archivo .env")
+    logger.critical("Error, no se encontró el token en el archivo .env")
+    raise ValueError("Error, no se encontró el token en el archivo .env")
 
 mantener_vivo()
 
@@ -416,7 +437,14 @@ intents.guilds = True
 client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
 
+
+
+
 # ------------------Funciones auxiliares------------------#
+
+
+
+
 
 async def get_or_create_muted_role(guild: discord.Guild) -> Optional[discord.Role]:
     """Obtiene o crea el rol de silenciado"""
@@ -475,33 +503,40 @@ def has_higher_role(user1: discord.Member, user2: discord.Member) -> bool:
     """Verifica si user1 tiene un rol más alto que user2"""
     return user1.top_role > user2.top_role
 
+
+
+
+
 # ------------------Eventos------------------#
+
+
+
 
 @client.event
 async def on_ready():
     logger.info(f"✅ {client.user.name} se ha conectado a Discord")
-    logger.info(f"📊 Conectado a {len(client.guilds)} servidores")
+    logger.info(f"✅ Conectado a {len(client.guilds)} servidores")
     
     try:
         synced = await tree.sync()
-        logger.info(f"🔄 {len(synced)} comandos sincronizados")
+        logger.info(f"✅ {len(synced)} comandos sincronizados")
     except Exception as e:
-        logger.error(f"⚠️ Error al sincronizar comandos: {e}")
+        logger.error(f" Error al sincronizar comandos: {e}")
     
     if not check_mutes.is_running():
         check_mutes.start()
-        logger.info("⏰ Sistema de mutes automáticos iniciado")
+        logger.info("✅ Sistema de mutes automáticos iniciado")
     
     if not check_lockdowns.is_running():
         check_lockdowns.start()
-        logger.info("🔒 Sistema de lockdowns automáticos iniciado")
+        logger.info("✅ Sistema de lockdowns automáticos iniciado")
 
 @client.event
 async def on_guild_join(guild: discord.Guild):
     """Evento cuando el bot se une a un servidor nuevo"""
-    logger.info(f"🎉 Bot añadido a nuevo servidor: {guild.name} (ID: {guild.id})")
+    logger.info(f"✅ Bot añadido a nuevo servidor: {guild.name} (ID: {guild.id})")
     
-    # Crear rol de silenciado automáticamente
+    # Crear rol de silenciado
     muted_role = await get_or_create_muted_role(guild)
     if muted_role:
         await setup_muted_role_permissions(guild, muted_role)
@@ -529,7 +564,16 @@ async def on_error(event, *args, **kwargs):
     """Maneja errores globales del bot"""
     logger.error(f"Error en evento {event}", exc_info=True)
 
+
+
+
+
 # -----------------Tareas programadas-----------------#
+
+
+
+
+
 
 @tasks.loop(minutes=1)
 async def check_mutes():
@@ -659,9 +703,28 @@ async def before_check_mutes():
 async def before_check_lockdowns():
     await client.wait_until_ready()
 
+
+
+
+
 # ------------------Comandos------------------#
-        
+
+
+
+
+
+
+
+
+
+
+
+
+
 # ------------------Comando de Ayuda------------------#
+
+
+
 
 @tree.command(name="help", description="Muestra todos los comandos disponibles")
 async def help_command(interaction: discord.Interaction):
@@ -735,9 +798,22 @@ async def help_command(interaction: discord.Interaction):
 
 
 
-#--------Comando para IA---------#
+
+
+
+
+
+#--------Configuración para la IA---------#
+
+
+
+
+
+
+
 
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+#configuración del api para IA ^
 
 SYSTEM_PROMPT = (
     "Eres una IA simpática, útil y con humor ligero. "
@@ -745,9 +821,22 @@ SYSTEM_PROMPT = (
     "No uses lenguaje ofensivo ni hables de temas inapropiados."
     "Estas en el servidor las tortuguitas de ezku, de un youtuber llamado ezku claramente, trata sobre linux, juegos, memes y social sempre responde teniendo de referencia esto, usando para referirse a un usuario el termino tortuguita"
 )
-
+#promp personalizable para contextualizar la IA
 conversation_history = {}
 active_chat_channels = set()
+#esto otorga permisos de acceso a la IA ^
+
+
+
+
+
+
+#--------------Comando /chat para hablar con la ia-------------------#
+
+
+
+
+
 
 @tree.command(
     name="chat",
@@ -804,7 +893,10 @@ async def limpiar_chat(interaction: discord.Interaction):
 
 
 
-#chat en vivo
+
+#------------------Esto es dependiente del anterior, espara permitir usar el comando /chat en ciertos canales-----------#
+
+
 
 
 
@@ -830,6 +922,14 @@ async def activar_chat(interaction: discord.Interaction):
     )
 
 
+
+
+#----------------Desactiva en comando anterior-------------------#
+
+
+
+
+
 @tree.command(
     name="desactivar_chat",
     description="Desactiva el chat de IA en este canal (Solo administradores)"
@@ -848,6 +948,14 @@ async def desactivar_chat(interaction: discord.Interaction):
         f"❌ Chat de IA desactivado en {interaction.channel.mention}",
         ephemeral=False
     )
+
+
+
+
+#--------------------Revisa que canales tienen permiso para /chat-------------------#
+
+
+
 
 
 @tree.command(
@@ -882,12 +990,26 @@ async def canales_chat(interaction: discord.Interaction):
 
 
 
+
+
 #chat en vivo
 
+
+
+
 # Canales con modo live chat activo (responde automáticamente sin comandos)
+
+
+
 live_chat_channels = set()
 
-#--------Comandos Live Chat (conversación continua)---------#
+
+
+
+#--------Comandos /livechat (para conversación continua)---------#
+
+
+
 
 @tree.command(
     name="livechat",
@@ -921,6 +1043,15 @@ async def livechat(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed)
 
 
+
+
+
+#----------------Desactiva el anterior----------------#
+
+
+
+
+
 @tree.command(
     name="stoplivechat",
     description="Desactiva el modo chat en vivo (Solo admin)"
@@ -943,6 +1074,14 @@ async def stoplivechat(interaction: discord.Interaction):
     )
     
     await interaction.response.send_message(embed=embed)
+
+
+
+
+
+#-------------------------revisa que canales tienen permitido el live chat--------------------#
+
+
 
 
 @tree.command(
@@ -976,7 +1115,12 @@ async def livechannels(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
+
+
 # Manejador de errores para comandos de administrador
+
+
+
 @livechat.error
 async def livechat_error(interaction: discord.Interaction, error):
     if isinstance(error, app_commands.errors.MissingPermissions):
@@ -995,7 +1139,15 @@ async def stoplivechat_error(interaction: discord.Interaction, error):
         )
 
 
-#--------Evento para Live Chat (respuesta automática)---------#
+
+
+
+
+#--------Evento para Live Chat---------#
+
+
+
+
 
 @client.event
 async def on_message(message):
@@ -1059,10 +1211,18 @@ async def on_message(message):
 
 
 
+
+
 #--------demas comandos---------#
 
 
-#ping pong pin
+
+
+
+
+
+#---------------/ping (para revisar el ping y si el bot esta funcional--------------#
+
 
 
 @tree.command(name="ping", description="Responde con Pong y muestra la latencia")
@@ -1093,7 +1253,10 @@ async def ping(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed)
     
 
-# Comando slash /saludo
+
+# ----------------------Comando /saludo (solo para un saludo random etiquetable, xd----------------#
+
+
 
 
 saludos = [
@@ -1125,7 +1288,9 @@ async def saludo(interaction: discord.Interaction, usuario: discord.Member):
 
 
 
-# Comando para dados
+#-------------Comando /tirardado (para tirar un dato al azar)---------------#
+
+
 
 
 @tree.command(name="tirardado", description="Lanza un dado de 6 caras")
@@ -1137,7 +1302,10 @@ async def tirardado(interaction: discord.Interaction):
 
 
 
-# Comando para cara o cruz 
+
+#--------------------------Muy random xd /moneda (para saber si sale cara o cruz xd)----------------------#
+
+
 
 
 @tree.command(name="moneda", description="Lanza una moneda al aire")
@@ -1149,7 +1317,10 @@ async def moneda(interaction: discord.Interaction):
 
 
 
-#encuesta
+
+#----------------------Comando para una encuesta simple tipo (si) o (no) /encuesta-----------------#
+
+
 
 
 
@@ -1224,7 +1395,14 @@ async def encuesta(interaction: discord.Interaction, pregunta: str):
 
 
 
+
+
 # ------------------Comandos de Moderación------------------#
+
+
+
+
+#---------------------/warn, para adveritir a los niños mal educados :D------------------#
 
 
 
@@ -1323,6 +1501,14 @@ async def warn(interaction: discord.Interaction, user: discord.Member, reason: s
         except discord.Forbidden:
             await interaction.followup.send("❌ No tengo permisos para silenciar a este usuario.", ephemeral=True)
 
+
+
+
+#-----------------/checkwarn, con este revisamos los warns de alguien :p-------------------#
+
+
+
+
 @tree.command(name="checkwarns", description="Consulta los warns de un usuario")
 @app_commands.describe(user="El usuario a consultar (opcional, por defecto tú mismo)")
 async def checkwarns(interaction: discord.Interaction, user: discord.Member = None):
@@ -1351,6 +1537,14 @@ async def checkwarns(interaction: discord.Interaction, user: discord.Member = No
             embed.add_field(name="Estado", value="🟢 Normal", inline=True)
     
     await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+
+
+#---------------------/clearwarn, con esta belleza hacemos como una limpieza de warns al usuario que seleccionemos---------------------_#
+
+
+
 
 @tree.command(name="clearwarns", description="Limpia los warns de un usuario")
 @app_commands.describe(user="El usuario al que resetear los warns", reason="Razón del reseteo")
@@ -1383,6 +1577,14 @@ async def clearwarns(interaction: discord.Interaction, user: discord.Member, rea
         await send_log(interaction.guild, embed)
     else:
         await interaction.response.send_message("❌ Error al resetear warns.", ephemeral=True)
+
+
+
+
+#---------------------/mute, claro esta, te silencia, esto usa la funcionalidad de otorgar un rol sin permisos de escribir o demas-----------------#
+
+
+
 
 @tree.command(name="mute", description="Mutea a un usuario por un tiempo específico o permanente")
 @app_commands.describe(
@@ -1480,6 +1682,16 @@ async def mute(interaction: discord.Interaction, user: discord.Member, duration:
         logger.error(f"Error en mute: {e}")
         await interaction.response.send_message(f"❌ Error al mutear: {str(e)}", ephemeral=True)
 
+
+
+
+
+#------------------desactiva el mute xd /unmute---------------------3
+
+
+
+
+
 @tree.command(name="unmute", description="Desmutea a un usuario antes de tiempo")
 @app_commands.describe(user="El usuario a desmutear", reason="Razón del desmuteo anticipado")
 async def unmute(interaction: discord.Interaction, user: discord.Member, reason: str = "No especificado"):
@@ -1543,6 +1755,14 @@ async def unmute(interaction: discord.Interaction, user: discord.Member, reason:
         logger.error(f"Error en unmute: {e}")
         await interaction.response.send_message(f"❌ Error al desmutear: {str(e)}", ephemeral=True)
 
+
+
+
+#------------------revisa el mute de alguien :O /muteinfo----------------------#
+
+
+
+
 @tree.command(name="muteinfo", description="Muestra información sobre el mute de un usuario")
 @app_commands.describe(user="El usuario a consultar")
 async def muteinfo(interaction: discord.Interaction, user: discord.Member):
@@ -1584,6 +1804,14 @@ async def muteinfo(interaction: discord.Interaction, user: discord.Member):
         embed.add_field(name="⏳ Duración total", value=format_duration(mute_info['mute_duration']), inline=False)
     
     await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+
+
+#----------------------expulsa un usario xd /kick---------------------------#
+
+
+
 
 @tree.command(name="kick", description="Expulsa a un usuario del servidor")
 @app_commands.describe(user="El usuario a expulsar", reason="Razón de la expulsión")
@@ -1651,6 +1879,14 @@ async def kick(interaction: discord.Interaction, user: discord.Member, reason: s
     except Exception as e:
         logger.error(f"Error en kick: {e}")
         await interaction.response.send_message(f"❌ Error al expulsar: {str(e)}", ephemeral=True)
+
+
+
+
+#--------------------------/ban, baneamos un usario, ojo -------------------------#
+
+
+
 
 @tree.command(name="ban", description="Banea a un usuario del servidor")
 @app_commands.describe(
@@ -1783,7 +2019,21 @@ async def unban(interaction: discord.Interaction, user_id: str, reason: str = "N
         logger.error(f"Error en unban: {e}")
         await interaction.followup.send(f"❌ Error al desbanear: {str(e)}")
 
+
+
+
+
 # ------------------Comandos de Gestión de Canales------------------#
+
+
+
+
+
+
+#-------/lockdown, para bloquia canales---------------#
+
+
+
 
 @tree.command(name="lockdown", description="Bloquea un canal para que nadie pueda enviar mensajes")
 @app_commands.describe(
@@ -1876,6 +2126,14 @@ async def lockdown(interaction: discord.Interaction, channel: discord.TextChanne
         logger.error(f"Error en lockdown: {e}")
         await interaction.response.send_message(f"❌ Error al bloquear el canal: {str(e)}", ephemeral=True)
 
+
+
+
+
+#------------------/unlock, desbloqueamos canal xd------------------#
+
+
+
 @tree.command(name="unlock", description="Desbloquea un canal previamente bloqueado")
 @app_commands.describe(
     channel="El canal a desbloquear (opcional, por defecto el canal actual)",
@@ -1946,6 +2204,16 @@ async def unlock(interaction: discord.Interaction, channel: discord.TextChannel 
         logger.error(f"Error en unlock: {e}")
         await interaction.response.send_message(f"❌ Error al desbloquear el canal: {str(e)}", ephemeral=True)
 
+
+
+
+
+#------------------/clear,  pa limpiar canales  ------------------#
+
+
+
+
+
 @tree.command(name="clear", description="Elimina una cantidad específica de mensajes")
 @app_commands.describe(
     amount="Cantidad de mensajes a eliminar (1-100)",
@@ -1992,6 +2260,15 @@ async def clear(interaction: discord.Interaction, amount: int, user: discord.Mem
         logger.error(f"Error en clear: {e}")
         await interaction.followup.send(f"❌ Error al eliminar mensajes: {str(e)}", ephemeral=True)
 
+
+
+
+
+#------------------/slowmode, modito lento qwq------------------#
+
+
+
+
 @tree.command(name="slowmode", description="Establece el modo lento en un canal")
 @app_commands.describe(
     seconds="Segundos de delay entre mensajes (0 para desactivar, máx 21600)",
@@ -2036,7 +2313,26 @@ async def slowmode(interaction: discord.Interaction, seconds: int, channel: disc
         logger.error(f"Error en slowmode: {e}")
         await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
 
+
+
+
+
+
+
+
+
 # ------------------Comandos de Roles------------------#
+
+
+
+
+
+
+
+#-----------------/addrole xd, para dar roles qwq-----------------#
+
+
+
 
 @tree.command(name="addrole", description="Asigna un rol a un usuario")
 @app_commands.describe(
@@ -2096,6 +2392,17 @@ async def addrole(interaction: discord.Interaction, user: discord.Member, role: 
         logger.error(f"Error en addrole: {e}")
         await interaction.response.send_message(f"❌ Error al asignar el rol: {str(e)}", ephemeral=True)
 
+
+
+
+
+
+#-----------------------/removerole, kitamos roles de alguie--------------------------#
+
+
+
+
+
 @tree.command(name="removerole", description="Quita un rol de un usuario")
 @app_commands.describe(
     user="El usuario al que quitar el rol",
@@ -2153,6 +2460,16 @@ async def removerole(interaction: discord.Interaction, user: discord.Member, rol
     except Exception as e:
         logger.error(f"Error en removerole: {e}")
         await interaction.response.send_message(f"❌ Error al quitar el rol: {str(e)}", ephemeral=True)
+
+
+
+
+
+#-----------------------/roleinfo, info de un rol-------------------------------#
+
+
+
+
 
 @tree.command(name="roleinfo", description="Muestra información detallada sobre un rol")
 @app_commands.describe(role="El rol a consultar")
@@ -2232,7 +2549,23 @@ async def roleinfo(interaction: discord.Interaction, role: discord.Role):
     
     await interaction.response.send_message(embed=embed)
 
+
+
+
 # ------------------Comandos de Información------------------#
+
+
+
+
+
+
+
+#-----------------------/userinfo, para información de usuario----------------#
+
+
+
+
+
 
 @tree.command(name="userinfo", description="Muestra información detallada sobre un usuario")
 @app_commands.describe(user="El usuario a consultar (opcional, por defecto tú mismo)")
@@ -2314,6 +2647,18 @@ async def userinfo(interaction: discord.Interaction, user: discord.Member = None
     embed.set_footer(text=f"ID: {target.id}")
     
     await interaction.response.send_message(embed=embed)
+
+
+
+
+
+
+
+#----------------------------------/serverinfo, para ver la info de un servidor---------------------------#
+
+
+
+
 
 @tree.command(name="serverinfo", description="Muestra información detallada sobre el servidor")
 async def serverinfo(interaction: discord.Interaction):
@@ -2419,6 +2764,16 @@ async def serverinfo(interaction: discord.Interaction):
     
     await interaction.response.send_message(embed=embed)
 
+
+
+
+
+#---------------------/modlog, info de historial de moderación--------------------------#
+
+
+
+
+
 @tree.command(name="modlogs", description="Muestra el historial de moderación de un usuario")
 @app_commands.describe(user="El usuario a consultar", limit="Cantidad de registros a mostrar (1-25)")
 async def modlogs(interaction: discord.Interaction, user: discord.Member, limit: int = 10):
@@ -2490,7 +2845,17 @@ async def modlogs(interaction: discord.Interaction, user: discord.Member, limit:
         logger.error(f"Error en modlogs: {e}")
         await interaction.response.send_message(f"❌ Error al consultar logs: {str(e)}", ephemeral=True)
 
+
+
+
+
 # ------------------Comandos de Configuración------------------#
+
+
+
+
+
+
 
 @tree.command(name="config", description="Configura el bot para este servidor")
 @app_commands.describe(
@@ -2628,7 +2993,16 @@ async def config(interaction: discord.Interaction, action: str, setting: str = N
             logger.error(f"Error en config reset: {e}")
             await interaction.response.send_message(f"❌ Error al restablecer configuración: {str(e)}", ephemeral=True)
 
+
+
+
 # ------------------Manejo de Errores------------------#
+
+
+
+
+
+
 
 @warn.error
 async def warn_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
@@ -2675,7 +3049,20 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
                 ephemeral=True
             )
 
+
+
+
+
+
 # ------------------Ejecuta el bot------------------#
+
+
+
+
+
+
+
+
 try:
     logger.info("🚀 Iniciando bot...")
     client.run(token)
