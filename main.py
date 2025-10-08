@@ -882,6 +882,182 @@ async def canales_chat(interaction: discord.Interaction):
 
 
 
+#chat en vivo
+
+# Canales con modo live chat activo (responde automáticamente sin comandos)
+live_chat_channels = set()
+
+#--------Comandos Live Chat (conversación continua)---------#
+
+@tree.command(
+    name="livechat",
+    description="Activa el modo chat en vivo - el bot responde automáticamente (Solo admin)"
+)
+@app_commands.checks.has_permissions(administrator=True)
+async def livechat(interaction: discord.Interaction):
+    if interaction.channel_id in live_chat_channels:
+        await interaction.response.send_message(
+            "ℹ️ El modo Live Chat ya está activo en este canal.",
+            ephemeral=True
+        )
+        return
+    
+    live_chat_channels.add(interaction.channel_id)
+    
+    embed = discord.Embed(
+        title="🟢 Live Chat Activado",
+        description=f"El bot ahora responderá automáticamente en {interaction.channel.mention}",
+        color=discord.Color.green()
+    )
+    embed.add_field(
+        name="💡 Cómo funciona",
+        value="• Escribe mensajes normalmente y el bot responderá automáticamente\n"
+              "• No necesitas usar `/chat`\n"
+              "• Para desactivar usa `/stoplivechat`",
+        inline=False
+    )
+    embed.set_footer(text="🐢 Las tortuguitas de Ezku")
+    
+    await interaction.response.send_message(embed=embed)
+
+
+@tree.command(
+    name="stoplivechat",
+    description="Desactiva el modo chat en vivo (Solo admin)"
+)
+@app_commands.checks.has_permissions(administrator=True)
+async def stoplivechat(interaction: discord.Interaction):
+    if interaction.channel_id not in live_chat_channels:
+        await interaction.response.send_message(
+            "ℹ️ El modo Live Chat no está activo en este canal.",
+            ephemeral=True
+        )
+        return
+    
+    live_chat_channels.discard(interaction.channel_id)
+    
+    embed = discord.Embed(
+        title="🔴 Live Chat Desactivado",
+        description=f"El bot ya no responderá automáticamente en {interaction.channel.mention}",
+        color=discord.Color.red()
+    )
+    
+    await interaction.response.send_message(embed=embed)
+
+
+@tree.command(
+    name="livechannels",
+    description="Muestra los canales con Live Chat activo"
+)
+async def livechannels(interaction: discord.Interaction):
+    if not live_chat_channels:
+        await interaction.response.send_message(
+            "📭 No hay canales con Live Chat activo.\n"
+            "Un administrador puede activarlo con `/livechat`",
+            ephemeral=True
+        )
+        return
+    
+    canales_texto = []
+    for channel_id in live_chat_channels:
+        canal = interaction.guild.get_channel(channel_id)
+        if canal:
+            canales_texto.append(f"• {canal.mention}")
+        else:
+            canales_texto.append(f"• ID: {channel_id} (canal eliminado)")
+    
+    embed = discord.Embed(
+        title="🐢 Canales con Live Chat Activo",
+        description="\n".join(canales_texto),
+        color=discord.Color.green()
+    )
+    embed.set_footer(text=f"Total: {len(live_chat_channels)} canal(es)")
+    
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+# Manejador de errores para comandos de administrador
+@livechat.error
+async def livechat_error(interaction: discord.Interaction, error):
+    if isinstance(error, app_commands.errors.MissingPermissions):
+        await interaction.response.send_message(
+            "🚫 Solo administradores pueden activar el Live Chat.",
+            ephemeral=True
+        )
+
+
+@stoplivechat.error
+async def stoplivechat_error(interaction: discord.Interaction, error):
+    if isinstance(error, app_commands.errors.MissingPermissions):
+        await interaction.response.send_message(
+            "🚫 Solo administradores pueden desactivar el Live Chat.",
+            ephemeral=True
+        )
+
+
+#--------Evento para Live Chat (respuesta automática)---------#
+
+@client.event
+async def on_message(message):
+    # Ignorar mensajes del propio bot
+    if message.author == client.user:
+        return
+    
+    # Ignorar comandos (mensajes que empiezan con /)
+    if message.content.startswith('/'):
+        return
+    
+    # Ignorar bots
+    if message.author.bot:
+        return
+    
+    # Verificar si el canal tiene live chat activo
+    if message.channel.id not in live_chat_channels:
+        return
+    
+    try:
+        # Mostrar indicador de "escribiendo..."
+        async with message.channel.typing():
+            # Obtener o crear historial del usuario
+            user_id = message.author.id
+            if user_id not in conversation_history:
+                conversation_history[user_id] = []
+            
+            # Crear modelo
+            model = genai.GenerativeModel("gemini-2.5-flash")
+            
+            # Agregar mensaje del usuario al historial
+            conversation_history[user_id].append(f"Usuario ({message.author.name}): {message.content}")
+            
+            # Construir prompt con historial (últimos 10 mensajes)
+            recent_history = conversation_history[user_id][-10:]
+            full_prompt = f"{SYSTEM_PROMPT}\n\n" + "\n".join(recent_history) + "\nIA:"
+            
+            # Generar respuesta
+            response = model.generate_content(full_prompt)
+            
+            # Guardar respuesta en historial
+            if response.text and response.text.strip():
+                conversation_history[user_id].append(f"IA: {response.text}")
+                
+                # Dividir respuesta si es muy larga (Discord max 2000 caracteres)
+                respuesta_texto = response.text
+                if len(respuesta_texto) > 2000:
+                    # Dividir en chunks de 2000 caracteres
+                    chunks = [respuesta_texto[i:i+2000] for i in range(0, len(respuesta_texto), 2000)]
+                    for chunk in chunks:
+                        await message.reply(chunk)
+                else:
+                    await message.reply(respuesta_texto)
+            else:
+                await message.reply("🤔 No pude generar una respuesta, intenta reformular tu mensaje.")
+    
+    except Exception as e:
+        logger.error(f"Error en live chat: {e}")
+        await message.reply(f"❌ Error al procesar tu mensaje: {e}")
+
+
+
 
 #--------demas comandos---------#
 
