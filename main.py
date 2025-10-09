@@ -1,7 +1,6 @@
 # Importamos las librerías necesarias
 import json
 import os
-import re
 import discord
 import sqlite3
 import asyncio
