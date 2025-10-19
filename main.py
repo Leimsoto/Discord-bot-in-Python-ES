@@ -610,6 +610,11 @@ async def check_mutes():
                     await user.remove_roles(muted_role, reason="Mute expirado automáticamente")
                     clear_mute_data(user_id, guild_id)
                     
+                    user_role = guild.get_role(1235353502620979314)
+                    if user_role and user_role not in user.roles:
+                        await user.add_roles(user_role, reason="Mute expirado - Rol User restaurado automáticamente")
+
+                    
                     logger.info(f"✅ {user.name} desmuteado automáticamente en {guild.name}")
                     
                     # Notificar al usuario
@@ -1404,6 +1409,11 @@ async def warn(interaction: discord.Interaction, user: discord.Member, reason: s
             return
 
         try:
+
+            user_role = interaction.guild.get_role(1235353502620979314)
+            if user_role and user_role in user.roles:
+                await user.remove_roles(user_role, reason="Auto-mute - Rol User removido")
+            
             await user.add_roles(muted_role, reason=f"Mute automático por {max_warns} warns")
             auto_mute_duration = config['auto_mute_duration']
             
@@ -1559,6 +1569,12 @@ async def mute(interaction: discord.Interaction, user: discord.Member, duration:
             return
     
     try:
+        user_role = interaction.guild.get_role(1235353502620979314)
+
+        # Quitar el rol "User" si lo tiene
+        if user_role and user_role in user.roles:
+            await user.remove_roles(user_role, reason="Mute temporal - Rol User removido")
+
         await user.add_roles(muted_role, reason=f"Mute: {reason} | Moderador: {interaction.user.name}")
         set_mute(user.id, interaction.guild.id, duration_seconds)
         log_action(user.id, interaction.guild.id, "MUTE", interaction.user.id, reason)
@@ -1642,6 +1658,13 @@ async def unmute(interaction: discord.Interaction, user: discord.Member, reason:
     try:
         await user.remove_roles(muted_role, reason=f"Unmute: {reason} | Moderador: {interaction.user.name}")
         clear_mute_data(user.id, interaction.guild.id)
+
+        # Devolver el rol "User"        
+        user_role = interaction.guild.get_role(1235353502620979314)
+        if user_role and user_role not in user.roles:
+            await user.add_roles(user_role, reason="Unmute - Rol User restaurado")
+
+        
         log_action(user.id, interaction.guild.id, "UNMUTE", interaction.user.id, reason)
         
         embed = discord.Embed(
