@@ -3439,6 +3439,71 @@ async def config(interaction: discord.Interaction, action: str, setting: str = N
 
 
 
+#---- de urgencia-
+
+
+@tree.command(name="leave_servers", description="Salir de todos los servidores excepto el principal")
+@app_commands.describe(confirm="Escribe 'CONFIRMAR' para ejecutar")
+async def leave_servers(interaction: discord.Interaction, confirm: str):
+    """Sale de todos los servidores excepto el principal (solo dueño del bot)"""
+    
+    # ID de tu servidor principal - REEMPLAZA CON TU ID
+    YOUR_GUILD_ID = 1214414622111567892 
+    
+    # Verifica que solo tú puedas usar este comando (reemplaza con tu user ID)
+    OWNER_ID = 939566812230721616
+    
+    if interaction.user.id != OWNER_ID:
+        await interaction.response.send_message("❌ Solo el dueño del bot puede usar este comando.", ephemeral=True)
+        return
+    
+    if confirm != "CONFIRMAR":
+        await interaction.response.send_message(
+            "⚠️ Este comando hará que el bot salga de todos los servidores excepto el principal.\n"
+            f"Para confirmar, usa: `/leave_servers confirm:CONFIRMAR`",
+            ephemeral=True
+        )
+        return
+    
+    await interaction.response.defer(ephemeral=True)
+    
+    left_guilds = []
+    errors = []
+    
+    for guild in client.guilds:
+        if guild.id != YOUR_GUILD_ID:
+            try:
+                guild_info = f"{guild.name} (ID: {guild.id})"
+                await guild.leave()
+                left_guilds.append(guild_info)
+                logger.info(f"✅ Salió del servidor: {guild_info}")
+            except Exception as e:
+                error_msg = f"{guild.name}: {str(e)}"
+                errors.append(error_msg)
+                logger.error(f"❌ Error al salir de {guild.name}: {e}")
+    
+    # Construir respuesta
+    embed = discord.Embed(
+        title="🚪 Limpieza de Servidores Completada",
+        color=discord.Color.green() if not errors else discord.Color.orange(),
+        timestamp=datetime.now(timezone.utc)
+    )
+    
+    if left_guilds:
+        servers_text = "\n".join([f"• {s}" for s in left_guilds[:10]])
+        if len(left_guilds) > 10:
+            servers_text += f"\n... y {len(left_guilds) - 10} más"
+        embed.add_field(name=f"✅ Servidores abandonados ({len(left_guilds)})", value=servers_text, inline=False)
+    else:
+        embed.add_field(name="ℹ️ Sin cambios", value="El bot solo está en el servidor principal", inline=False)
+    
+    if errors:
+        errors_text = "\n".join([f"• {e}" for e in errors[:5]])
+        embed.add_field(name=f"❌ Errores ({len(errors)})", value=errors_text, inline=False)
+    
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
 
 # ------------------Manejo de Errores------------------#
 
