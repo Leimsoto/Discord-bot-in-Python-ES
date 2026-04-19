@@ -269,25 +269,42 @@ class DatabaseManager:
 
     def _execute(self, query: str, params: tuple = ()) -> None:
         with self._conn() as conn:
-            conn.cursor().execute(self._adapt(query), params)
+            if self.db_type == "postgresql":
+                from psycopg2.extras import RealDictCursor
+                cur = conn.cursor(cursor_factory=RealDictCursor)
+            else:
+                cur = conn.cursor()
+            cur.execute(self._adapt(query), params)
 
     def _fetchone(self, query: str, params: tuple = ()) -> Optional[Dict]:
         with self._conn() as conn:
-            cur = conn.cursor()
+            if self.db_type == "postgresql":
+                from psycopg2.extras import RealDictCursor
+                cur = conn.cursor(cursor_factory=RealDictCursor)
+            else:
+                cur = conn.cursor()
             cur.execute(self._adapt(query), params)
             row = cur.fetchone()
             return dict(row) if row else None
 
     def _fetchall(self, query: str, params: tuple = ()) -> List[Dict]:
         with self._conn() as conn:
-            cur = conn.cursor()
+            if self.db_type == "postgresql":
+                from psycopg2.extras import RealDictCursor
+                cur = conn.cursor(cursor_factory=RealDictCursor)
+            else:
+                cur = conn.cursor()
             cur.execute(self._adapt(query), params)
             return [dict(r) for r in cur.fetchall()]
 
     def _executemany(self, queries_params: List[tuple]) -> None:
         """Ejecuta múltiples queries en una única transacción."""
         with self._conn() as conn:
-            cur = conn.cursor()
+            if self.db_type == "postgresql":
+                from psycopg2.extras import RealDictCursor
+                cur = conn.cursor(cursor_factory=RealDictCursor)
+            else:
+                cur = conn.cursor()
             for query, params in queries_params:
                 cur.execute(self._adapt(query), params)
 
@@ -302,7 +319,11 @@ class DatabaseManager:
         schema = schema_map[self.db_type]
 
         with self._conn() as conn:
-            cur = conn.cursor()
+            if self.db_type == "postgresql":
+                from psycopg2.extras import RealDictCursor
+                cur = conn.cursor(cursor_factory=RealDictCursor)
+            else:
+                cur = conn.cursor()
             # SQLite soporta executescript; los demás ejecutan statement a statement
             if self.db_type == "sqlite":
                 conn.executescript(schema)
