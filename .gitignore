@@ -1,0 +1,11 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*.pyc
+
+# Carpeta de datos de la base de datos (creada automáticamente)
+data/
+
+# Entorno y logs
+.env
+bot.log
