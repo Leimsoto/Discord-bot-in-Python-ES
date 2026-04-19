@@ -1,16 +1,21 @@
-from flask import Flask
+"""
+mantener_vivo.py
+────────────────
+Pequeño servidor Flask que responde al ping de UptimeRobot u otros
+servicios, evitando que la instancia se duerma en Replit / Render free tier.
+"""
+
 from threading import Thread
+from flask import Flask
 
-app = Flask('')
+_app = Flask(__name__)
 
-@app.route('/')
+
+@_app.route("/")
 def home():
-    return "Estoy vivo"
+    return "🐢 Bot activo"
 
-def run():
-    app.run(host='0.0.0.0', port=8080)
 
 def mantener_vivo():
-    t = Thread(target=run)
+    t = Thread(target=lambda: _app.run(host="0.0.0.0", port=8080), daemon=True)
     t.start()
-
