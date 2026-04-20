@@ -824,167 +824,67 @@ class Moderation(commands.Cog):
         await self._handle_perm_error(interaction, error)
 
     # ─────────────────────────────────────────────────────────────────────────
-    # /modconfig  (grupo de subcomandos)
+    # /modconfig  (panel interactivo único)
     # ─────────────────────────────────────────────────────────────────────────
 
-    modconfig = app_commands.Group(
+    @app_commands.command(
         name="modconfig",
-        description="Configuración del sistema de moderación (solo administradores)",
-        default_permissions=discord.Permissions(administrator=True),
+        description="Abre el panel interactivo de configuración de moderación",
     )
-
-    @modconfig.command(name="view", description="Ver la configuración actual de moderación")
-    async def mc_view(self, interaction: discord.Interaction):
+    @app_commands.checks.has_permissions(administrator=True)
+    async def modconfig(self, interaction: discord.Interaction):
         cfg = self.db.get_config(interaction.guild_id)
+        embed = self._build_config_embed(interaction.guild, cfg)
+        view = ModConfigView(self, interaction.user.id)
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
-        mute_role = interaction.guild.get_role(cfg.get("mute_role_id") or 0)
-        log_ch = interaction.guild.get_channel(cfg.get("log_channel_id") or 0)
+    def _build_config_embed(self, guild: discord.Guild, cfg: dict) -> discord.Embed:
+        """Construye el embed de estado de configuración de moderación."""
+        mute_role = guild.get_role(cfg.get("mute_role_id") or 0)
+        log_ch = guild.get_channel(cfg.get("log_channel_id") or 0)
 
         embed = discord.Embed(
-            title="⚙️ Configuración de moderación",
-            description=f"Servidor: **{interaction.guild.name}**",
+            title="⚙️ Panel de Configuración de Moderación",
+            description=f"Servidor: **{guild.name}**",
             color=discord.Color.blurple(),
             timestamp=datetime.now(timezone.utc),
         )
         embed.add_field(
-            name="🔇 Rol de mute",
+            name="🔇 Rol de Mute",
             value=mute_role.mention if mute_role else "❌ No configurado",
             inline=True,
         )
         embed.add_field(
-            name="📝 Canal de logs",
-            value=log_ch.mention if log_ch else "❌ No configurado",  # type: ignore
+            name="📝 Canal de Logs",
+            value=log_ch.mention if log_ch else "❌ No configurado",
             inline=True,
         )
-        embed.add_field(name="\u200b", value="\u200b", inline=False)
-
-        cons = [
-            (
-                "warn_mute_enabled", "warn_mute_threshold",
-                f"Mute ({fmt_duration(cfg.get('warn_mute_duration', 3600))})"
-            ),
-            ("warn_kick_enabled", "warn_kick_threshold", "Kick"),
-            ("warn_ban_enabled",  "warn_ban_threshold",  "Ban"),
-        ]
-        lines = []
-        for en_key, thr_key, label in cons:
-            icon = "✅" if cfg.get(en_key, 0) else "❌"
-            lines.append(f"{icon} **{label}** al llegar a {cfg.get(thr_key, '?')} warns")
-
-        embed.add_field(name="🎚️ Consecuencias de warns", value="\n".join(lines), inline=False)
         embed.add_field(
-            name="🖼️ Embed de warn",
+            name="⏱️ Duración Auto-Mute",
+            value=f"**{fmt_duration(cfg.get('warn_mute_duration', 3600))}**",
+            inline=True,
+        )
+
+        mute_on = bool(cfg.get("warn_mute_enabled", 1))
+        kick_on = bool(cfg.get("warn_kick_enabled", 0))
+        ban_on = bool(cfg.get("warn_ban_enabled", 0))
+        lines = [
+            f"{'✅' if mute_on else '❌'} **Mute** al llegar a {cfg.get('warn_mute_threshold', 3)} warns",
+            f"{'✅' if kick_on else '❌'} **Kick** al llegar a {cfg.get('warn_kick_threshold', 5)} warns",
+            f"{'✅' if ban_on else '❌'} **Ban** al llegar a {cfg.get('warn_ban_threshold', 7)} warns",
+        ]
+        embed.add_field(name="🎚️ Consecuencias de Warns", value="\n".join(lines), inline=False)
+        embed.add_field(
+            name="🖼️ Embed de Warn",
             value="✅ Personalizado" if cfg.get("warn_embed_config") else "📋 Por defecto",
             inline=True,
         )
-        embed.set_footer(text="Usa /modconfig <subcomando> para modificar")
+        embed.set_footer(text="Usa los botones para modificar la configuración")
+        return embed
 
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
-    @modconfig.command(name="mute_role", description="Asigna el rol que se usará para silenciar")
-    @app_commands.describe(rol="Rol de mute existente en el servidor")
-    async def mc_mute_role(self, interaction: discord.Interaction, rol: discord.Role):
-        self.db.set_config(interaction.guild_id, mute_role_id=rol.id)
-        await interaction.response.send_message(
-            f"✅ Rol de mute configurado: {rol.mention}", ephemeral=True
-        )
-
-    @modconfig.command(name="log_channel", description="Canal donde se registran las acciones de moderación")
-    @app_commands.describe(canal="Canal de texto para los logs")
-    async def mc_log_channel(self, interaction: discord.Interaction, canal: discord.TextChannel):
-        self.db.set_config(interaction.guild_id, log_channel_id=canal.id)
-        await interaction.response.send_message(
-            f"✅ Canal de logs: {canal.mention}", ephemeral=True
-        )
-
-    @modconfig.command(name="thresholds", description="Umbrales de warns para cada consecuencia")
-    @app_commands.describe(
-        mute_en="Warns necesarios para el mute automático",
-        kick_en="Warns necesarios para el kick automático",
-        ban_en="Warns necesarios para el ban automático",
-    )
-    async def mc_thresholds(
-        self,
-        interaction: discord.Interaction,
-        mute_en: app_commands.Range[int, 1, 50] = 3,
-        kick_en: app_commands.Range[int, 1, 50] = 5,
-        ban_en:  app_commands.Range[int, 1, 50] = 7,
-    ):
-        if not (mute_en < kick_en < ban_en):
-            return await interaction.response.send_message(
-                "❌ Los umbrales deben ser ascendentes: mute < kick < ban.", ephemeral=True
-            )
-        self.db.set_config(
-            interaction.guild_id,
-            warn_mute_threshold=mute_en,
-            warn_kick_threshold=kick_en,
-            warn_ban_threshold=ban_en,
-        )
-        await interaction.response.send_message(
-            f"✅ Umbrales actualizados:\n"
-            f"• Mute → **{mute_en}** warns\n"
-            f"• Kick → **{kick_en}** warns\n"
-            f"• Ban  → **{ban_en}** warns",
-            ephemeral=True,
-        )
-
-    @modconfig.command(
-        name="consequences",
-        description="Activa o desactiva las consecuencias automáticas de warns",
-    )
-    @app_commands.describe(
-        mute="Activar mute automático",
-        kick="Activar kick automático",
-        ban="Activar ban automático",
-    )
-    async def mc_consequences(
-        self,
-        interaction: discord.Interaction,
-        mute: Optional[bool] = None,
-        kick: Optional[bool] = None,
-        ban:  Optional[bool] = None,
-    ):
-        updates: dict = {}
-        if mute is not None:
-            updates["warn_mute_enabled"] = int(mute)
-        if kick is not None:
-            updates["warn_kick_enabled"] = int(kick)
-        if ban is not None:
-            updates["warn_ban_enabled"] = int(ban)
-
-        if not updates:
-            return await interaction.response.send_message(
-                "❌ Especifica al menos una consecuencia.", ephemeral=True
-            )
-
-        self.db.set_config(interaction.guild_id, **updates)
-
-        lines = []
-        if mute is not None:
-            lines.append(f"Mute automático: {'✅ activado' if mute else '❌ desactivado'}")
-        if kick is not None:
-            lines.append(f"Kick automático: {'✅ activado' if kick else '❌ desactivado'}")
-        if ban is not None:
-            lines.append(f"Ban automático:  {'✅ activado' if ban else '❌ desactivado'}")
-
-        await interaction.response.send_message("\n".join(lines), ephemeral=True)
-
-    @modconfig.command(name="mute_duration", description="Duración del mute automático por warns")
-    @app_commands.describe(duracion="Ejemplos: 30m · 2h · 1d · 1w")
-    async def mc_mute_duration(self, interaction: discord.Interaction, duracion: str):
-        secs = parse_duration(duracion)
-        if secs is None:
-            return await interaction.response.send_message(
-                "❌ Formato inválido. Ejemplos: `30m` · `2h` · `1d` · `1w`", ephemeral=True
-            )
-        self.db.set_config(interaction.guild_id, warn_mute_duration=secs)
-        await interaction.response.send_message(
-            f"✅ Duración de auto-mute: **{fmt_duration(secs)}**", ephemeral=True
-        )
-
-    @modconfig.command(name="warn_embed", description="Personaliza el embed que se envía al advertir")
-    async def mc_warn_embed(self, interaction: discord.Interaction):
-        await interaction.response.send_modal(WarnEmbedModal())
+    @modconfig.error
+    async def modconfig_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
+        await self._handle_perm_error(interaction, error)
 
     # ── Manejador de errores de permisos ──────────────────────────────────────
 
@@ -1003,6 +903,202 @@ class Moderation(commands.Cog):
             await interaction.response.send_message(msg, ephemeral=True)
         else:
             await interaction.followup.send(msg, ephemeral=True)
+
+
+# ── Views y Modals para /modconfig ────────────────────────────────────────────
+
+class ModConfigView(discord.ui.View):
+    """Vista principal del panel de configuración de moderación."""
+
+    def __init__(self, cog: Moderation, author_id: int):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.author_id = author_id
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message("❌ Solo quien abrió el panel puede usarlo.", ephemeral=True)
+            return False
+        return True
+
+    async def _refresh(self, interaction: discord.Interaction):
+        cfg = self.cog.db.get_config(interaction.guild_id)
+        embed = self.cog._build_config_embed(interaction.guild, cfg)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="Rol de Mute", emoji="🔇", style=discord.ButtonStyle.primary, row=0)
+    async def mute_role_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        view = MuteRoleSelectView(self)
+        await interaction.response.edit_message(view=view)
+
+    @discord.ui.button(label="Canal de Logs", emoji="📝", style=discord.ButtonStyle.primary, row=0)
+    async def log_channel_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        view = LogChannelSelectView(self)
+        await interaction.response.edit_message(view=view)
+
+    @discord.ui.button(label="Duración Mute", emoji="⏱️", style=discord.ButtonStyle.primary, row=0)
+    async def mute_duration_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(MuteDurationConfigModal(self))
+
+    @discord.ui.button(label="Umbrales", emoji="🎚️", style=discord.ButtonStyle.secondary, row=1)
+    async def thresholds_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(ThresholdsConfigModal(self))
+
+    @discord.ui.button(label="Consecuencias", emoji="⚡", style=discord.ButtonStyle.secondary, row=1)
+    async def consequences_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        cfg = self.cog.db.get_config(interaction.guild_id)
+        view = ConsequencesToggleView(self, cfg)
+        embed = self.cog._build_config_embed(interaction.guild, cfg)
+        await interaction.response.edit_message(embed=embed, view=view)
+
+    @discord.ui.button(label="Embed de Warn", emoji="🖼️", style=discord.ButtonStyle.secondary, row=1)
+    async def warn_embed_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(WarnEmbedModal())
+
+    @discord.ui.button(label="Cerrar", emoji="❌", style=discord.ButtonStyle.danger, row=2)
+    async def close_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(content="✅ Panel cerrado.", embed=None, view=None)
+        self.stop()
+
+
+class MuteRoleSelectView(discord.ui.View):
+    def __init__(self, parent: ModConfigView):
+        super().__init__(timeout=60)
+        self.parent = parent
+
+    @discord.ui.select(cls=discord.ui.RoleSelect, placeholder="Selecciona el rol de mute", min_values=1, max_values=1)
+    async def select_role(self, interaction: discord.Interaction, select: discord.ui.RoleSelect):
+        role = select.values[0]
+        self.parent.cog.db.set_config(interaction.guild_id, mute_role_id=role.id)
+        cfg = self.parent.cog.db.get_config(interaction.guild_id)
+        embed = self.parent.cog._build_config_embed(interaction.guild, cfg)
+        await interaction.response.edit_message(embed=embed, view=self.parent)
+
+    @discord.ui.button(label="Volver", emoji="◀️", style=discord.ButtonStyle.secondary)
+    async def back(self, interaction: discord.Interaction, button: discord.ui.Button):
+        cfg = self.parent.cog.db.get_config(interaction.guild_id)
+        embed = self.parent.cog._build_config_embed(interaction.guild, cfg)
+        await interaction.response.edit_message(embed=embed, view=self.parent)
+
+
+class LogChannelSelectView(discord.ui.View):
+    def __init__(self, parent: ModConfigView):
+        super().__init__(timeout=60)
+        self.parent = parent
+
+    @discord.ui.select(cls=discord.ui.ChannelSelect, placeholder="Selecciona el canal de logs",
+                       channel_types=[discord.ChannelType.text], min_values=1, max_values=1)
+    async def select_channel(self, interaction: discord.Interaction, select: discord.ui.ChannelSelect):
+        channel = select.values[0]
+        self.parent.cog.db.set_config(interaction.guild_id, log_channel_id=channel.id)
+        cfg = self.parent.cog.db.get_config(interaction.guild_id)
+        embed = self.parent.cog._build_config_embed(interaction.guild, cfg)
+        await interaction.response.edit_message(embed=embed, view=self.parent)
+
+    @discord.ui.button(label="Volver", emoji="◀️", style=discord.ButtonStyle.secondary)
+    async def back(self, interaction: discord.Interaction, button: discord.ui.Button):
+        cfg = self.parent.cog.db.get_config(interaction.guild_id)
+        embed = self.parent.cog._build_config_embed(interaction.guild, cfg)
+        await interaction.response.edit_message(embed=embed, view=self.parent)
+
+
+class MuteDurationConfigModal(discord.ui.Modal, title="Duración del auto-mute"):
+    duration_input = discord.ui.TextInput(
+        label="Duración (ej: 30m, 2h, 1d, 1w)",
+        placeholder="1h",
+        max_length=10,
+    )
+
+    def __init__(self, parent: ModConfigView):
+        super().__init__()
+        self.parent = parent
+
+    async def on_submit(self, interaction: discord.Interaction):
+        secs = parse_duration(self.duration_input.value)
+        if secs is None:
+            return await interaction.response.send_message(
+                "❌ Formato inválido. Ejemplos: `30m` · `2h` · `1d`", ephemeral=True
+            )
+        self.parent.cog.db.set_config(interaction.guild_id, warn_mute_duration=secs)
+        await self.parent._refresh(interaction)
+
+
+class ThresholdsConfigModal(discord.ui.Modal, title="Umbrales de warns"):
+    mute_thr = discord.ui.TextInput(label="Warns para Mute automático", default="3", max_length=3)
+    kick_thr = discord.ui.TextInput(label="Warns para Kick automático", default="5", max_length=3)
+    ban_thr = discord.ui.TextInput(label="Warns para Ban automático", default="7", max_length=3)
+
+    def __init__(self, parent: ModConfigView):
+        super().__init__()
+        self.parent = parent
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            m, k, b = int(self.mute_thr.value), int(self.kick_thr.value), int(self.ban_thr.value)
+        except ValueError:
+            return await interaction.response.send_message("❌ Valores deben ser números.", ephemeral=True)
+        if not (1 <= m < k < b <= 50):
+            return await interaction.response.send_message(
+                "❌ Los umbrales deben ser ascendentes: mute < kick < ban (1-50).", ephemeral=True
+            )
+        self.parent.cog.db.set_config(
+            interaction.guild_id,
+            warn_mute_threshold=m, warn_kick_threshold=k, warn_ban_threshold=b,
+        )
+        await self.parent._refresh(interaction)
+
+
+class ConsequencesToggleView(discord.ui.View):
+    """Botones toggle para activar/desactivar consecuencias."""
+
+    def __init__(self, parent: ModConfigView, cfg: dict):
+        super().__init__(timeout=120)
+        self.parent = parent
+        self.mute_on = bool(cfg.get("warn_mute_enabled", 1))
+        self.kick_on = bool(cfg.get("warn_kick_enabled", 0))
+        self.ban_on = bool(cfg.get("warn_ban_enabled", 0))
+        self._update_labels()
+
+    def _update_labels(self):
+        self.mute_btn.label = f"Mute: {'✅' if self.mute_on else '❌'}"
+        self.mute_btn.style = discord.ButtonStyle.success if self.mute_on else discord.ButtonStyle.secondary
+        self.kick_btn.label = f"Kick: {'✅' if self.kick_on else '❌'}"
+        self.kick_btn.style = discord.ButtonStyle.success if self.kick_on else discord.ButtonStyle.secondary
+        self.ban_btn.label = f"Ban: {'✅' if self.ban_on else '❌'}"
+        self.ban_btn.style = discord.ButtonStyle.success if self.ban_on else discord.ButtonStyle.secondary
+
+    @discord.ui.button(label="Mute", row=0)
+    async def mute_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.mute_on = not self.mute_on
+        self.parent.cog.db.set_config(interaction.guild_id, warn_mute_enabled=int(self.mute_on))
+        self._update_labels()
+        cfg = self.parent.cog.db.get_config(interaction.guild_id)
+        embed = self.parent.cog._build_config_embed(interaction.guild, cfg)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="Kick", row=0)
+    async def kick_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.kick_on = not self.kick_on
+        self.parent.cog.db.set_config(interaction.guild_id, warn_kick_enabled=int(self.kick_on))
+        self._update_labels()
+        cfg = self.parent.cog.db.get_config(interaction.guild_id)
+        embed = self.parent.cog._build_config_embed(interaction.guild, cfg)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="Ban", row=0)
+    async def ban_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.ban_on = not self.ban_on
+        self.parent.cog.db.set_config(interaction.guild_id, warn_ban_enabled=int(self.ban_on))
+        self._update_labels()
+        cfg = self.parent.cog.db.get_config(interaction.guild_id)
+        embed = self.parent.cog._build_config_embed(interaction.guild, cfg)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="Volver al panel", emoji="◀️", style=discord.ButtonStyle.primary, row=1)
+    async def back(self, interaction: discord.Interaction, button: discord.ui.Button):
+        cfg = self.parent.cog.db.get_config(interaction.guild_id)
+        embed = self.parent.cog._build_config_embed(interaction.guild, cfg)
+        await interaction.response.edit_message(embed=embed, view=self.parent)
 
 
 async def setup(bot: commands.Bot):

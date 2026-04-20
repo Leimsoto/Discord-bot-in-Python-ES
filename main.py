@@ -40,6 +40,8 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 intents.guilds = True
+intents.voice_states = True
+intents.presences = True
 
 
 # ── Bot ───────────────────────────────────────────────────────────────────────
@@ -66,7 +68,14 @@ class TortuguBot(commands.Bot):
         Llamado automáticamente antes de conectar al WebSocket.
         Carga los cogs y sincroniza los comandos slash.
         """
-        cogs = ["cogs.moderation", "cogs.info"]
+        cogs = [
+            "cogs.moderation",
+            "cogs.info",
+            "cogs.channels",
+            "cogs.users",
+            "cogs.embeds",
+            "cogs.serverutils",
+        ]
         for cog in cogs:
             try:
                 await self.load_extension(cog)

@@ -31,10 +31,20 @@ VALID_CONFIG_COLUMNS = frozenset({
     "warn_mute_threshold", "warn_kick_threshold", "warn_ban_threshold",
     "warn_mute_enabled", "warn_kick_enabled", "warn_ban_enabled",
     "warn_mute_duration", "warn_embed_config",
+    "staff_role_id",
 })
 
 VALID_USER_COLUMNS = frozenset({
     "warns", "mute_start", "mute_duration",
+})
+
+VALID_CHANNEL_CONFIG_COLUMNS = frozenset({
+    "guild_id", "locked", "media_only", "media_config", "auto_react", "slowmode",
+})
+
+VALID_SERVER_CONFIG_COLUMNS = frozenset({
+    "staff_role_id", "modlog_channel", "serverlog_channel", "log_events",
+    "embed_role_id", "channels_role_id", "users_role_id",
 })
 
 
@@ -52,7 +62,8 @@ CREATE TABLE IF NOT EXISTS guild_config (
     warn_kick_enabled   INTEGER DEFAULT 0,
     warn_ban_enabled    INTEGER DEFAULT 0,
     warn_mute_duration  INTEGER DEFAULT 3600,
-    warn_embed_config   TEXT
+    warn_embed_config   TEXT,
+    staff_role_id INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS user_records (
@@ -75,11 +86,43 @@ CREATE TABLE IF NOT EXISTS mod_actions (
     created_at   TEXT    NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS channel_config (
+    channel_id   INTEGER PRIMARY KEY,
+    guild_id     INTEGER NOT NULL,
+    locked       INTEGER DEFAULT 0,
+    media_only   INTEGER DEFAULT 0,
+    media_config TEXT,
+    auto_react   TEXT,
+    slowmode     INTEGER DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS server_config (
+    guild_id          INTEGER PRIMARY KEY,
+    staff_role_id     INTEGER,
+    modlog_channel    INTEGER,
+    serverlog_channel INTEGER,
+    log_events        TEXT,
+    embed_role_id     INTEGER,
+    channels_role_id  INTEGER,
+    users_role_id     INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS saved_embeds (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id     INTEGER NOT NULL,
+    creator_id   INTEGER NOT NULL,
+    name         TEXT,
+    embed_data   TEXT NOT NULL,
+    created_at   TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_ur_guild   ON user_records(guild_id);
 CREATE INDEX IF NOT EXISTS idx_ma_target  ON mod_actions(target_id, guild_id);
 CREATE INDEX IF NOT EXISTS idx_ma_time    ON mod_actions(guild_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_mute_active ON user_records(mute_start)
     WHERE mute_start IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_cc_guild   ON channel_config(guild_id);
+CREATE INDEX IF NOT EXISTS idx_se_guild   ON saved_embeds(guild_id);
 """
 
 _SCHEMA_POSTGRESQL = """
@@ -94,7 +137,8 @@ CREATE TABLE IF NOT EXISTS guild_config (
     warn_kick_enabled   SMALLINT DEFAULT 0,
     warn_ban_enabled    SMALLINT DEFAULT 0,
     warn_mute_duration  INTEGER DEFAULT 3600,
-    warn_embed_config   TEXT
+    warn_embed_config   TEXT,
+    staff_role_id BIGINT
 );
 
 CREATE TABLE IF NOT EXISTS user_records (
@@ -117,9 +161,41 @@ CREATE TABLE IF NOT EXISTS mod_actions (
     created_at   TEXT   NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS channel_config (
+    channel_id   BIGINT PRIMARY KEY,
+    guild_id     BIGINT NOT NULL,
+    locked       SMALLINT DEFAULT 0,
+    media_only   SMALLINT DEFAULT 0,
+    media_config TEXT,
+    auto_react   TEXT,
+    slowmode     INTEGER DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS server_config (
+    guild_id          BIGINT PRIMARY KEY,
+    staff_role_id     BIGINT,
+    modlog_channel    BIGINT,
+    serverlog_channel BIGINT,
+    log_events        TEXT,
+    embed_role_id     BIGINT,
+    channels_role_id  BIGINT,
+    users_role_id     BIGINT
+);
+
+CREATE TABLE IF NOT EXISTS saved_embeds (
+    id           BIGSERIAL PRIMARY KEY,
+    guild_id     BIGINT NOT NULL,
+    creator_id   BIGINT NOT NULL,
+    name         TEXT,
+    embed_data   TEXT NOT NULL,
+    created_at   TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_ur_guild  ON user_records(guild_id);
 CREATE INDEX IF NOT EXISTS idx_ma_target ON mod_actions(target_id, guild_id);
 CREATE INDEX IF NOT EXISTS idx_ma_time   ON mod_actions(guild_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_cc_guild  ON channel_config(guild_id);
+CREATE INDEX IF NOT EXISTS idx_se_guild  ON saved_embeds(guild_id);
 """
 
 _SCHEMA_MARIADB = """
@@ -134,7 +210,8 @@ CREATE TABLE IF NOT EXISTS guild_config (
     warn_kick_enabled   TINYINT DEFAULT 0,
     warn_ban_enabled    TINYINT DEFAULT 0,
     warn_mute_duration  INT DEFAULT 3600,
-    warn_embed_config   TEXT
+    warn_embed_config   TEXT,
+    staff_role_id BIGINT
 ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS user_records (
@@ -159,6 +236,39 @@ CREATE TABLE IF NOT EXISTS mod_actions (
     INDEX idx_ma_target (target_id, guild_id),
     INDEX idx_ma_time   (guild_id, created_at)
 ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS channel_config (
+    channel_id   BIGINT PRIMARY KEY,
+    guild_id     BIGINT NOT NULL,
+    locked       TINYINT DEFAULT 0,
+    media_only   TINYINT DEFAULT 0,
+    media_config TEXT,
+    auto_react   TEXT,
+    slowmode     INT DEFAULT 0,
+    INDEX idx_cc_guild (guild_id)
+) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS server_config (
+    guild_id          BIGINT PRIMARY KEY,
+    staff_role_id     BIGINT,
+    modlog_channel    BIGINT,
+    serverlog_channel BIGINT,
+    log_events        TEXT,
+    embed_role_id     BIGINT,
+    channels_role_id  BIGINT,
+    users_role_id     BIGINT
+) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS saved_embeds (
+    id           BIGINT NOT NULL AUTO_INCREMENT,
+    guild_id     BIGINT NOT NULL,
+    creator_id   BIGINT NOT NULL,
+    name         TEXT,
+    embed_data   TEXT NOT NULL,
+    created_at   VARCHAR(50) NOT NULL,
+    PRIMARY KEY (id),
+    INDEX idx_se_guild (guild_id)
+) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 """
 
 
@@ -177,6 +287,28 @@ class DatabaseManager:
         "warn_ban_enabled": 0,
         "warn_mute_duration": 3600,
         "warn_embed_config": None,
+        "staff_role_id": None,
+    }
+
+    DEFAULT_SERVER_CONFIG: Dict[str, Any] = {
+        "guild_id": None,
+        "staff_role_id": None,
+        "modlog_channel": None,
+        "serverlog_channel": None,
+        "log_events": None,
+        "embed_role_id": None,
+        "channels_role_id": None,
+        "users_role_id": None,
+    }
+
+    DEFAULT_CHANNEL_CONFIG: Dict[str, Any] = {
+        "channel_id": None,
+        "guild_id": None,
+        "locked": 0,
+        "media_only": 0,
+        "media_config": None,
+        "auto_react": None,
+        "slowmode": 0,
     }
 
     def __init__(self):
@@ -485,3 +617,138 @@ class DatabaseManager:
             "ORDER BY created_at DESC LIMIT ?",
             (user_id, guild_id, limit),
         )
+
+    def get_user_action_summary(self, user_id: int, guild_id: int) -> Dict[str, int]:
+        """Cuenta warns, kicks, bans, mutes de un usuario para /userinfo."""
+        rows = self._fetchall(
+            "SELECT action_type, COUNT(*) as cnt FROM mod_actions "
+            "WHERE target_id = ? AND guild_id = ? "
+            "GROUP BY action_type",
+            (user_id, guild_id),
+        )
+        summary = {"WARN": 0, "KICK": 0, "BAN": 0, "MUTE": 0, "UNMUTE": 0}
+        for r in rows:
+            if r["action_type"] in summary:
+                summary[r["action_type"]] = r["cnt"]
+        return summary
+
+    # ── Channel Config ────────────────────────────────────────────────────────
+
+    def get_channel_config(self, channel_id: int) -> Dict:
+        row = self._fetchone(
+            "SELECT * FROM channel_config WHERE channel_id = ?", (channel_id,)
+        )
+        result = dict(self.DEFAULT_CHANNEL_CONFIG)
+        result["channel_id"] = channel_id
+        if row:
+            result.update(row)
+        return result
+
+    def set_channel_config(self, channel_id: int, guild_id: int, **kwargs) -> None:
+        invalid = set(kwargs) - VALID_CHANNEL_CONFIG_COLUMNS
+        if invalid:
+            raise ValueError(f"Columnas inválidas: {invalid}")
+
+        ops = []
+        if self.db_type == "sqlite":
+            ops.append((
+                "INSERT OR IGNORE INTO channel_config (channel_id, guild_id) VALUES (?, ?)",
+                (channel_id, guild_id),
+            ))
+        elif self.db_type == "postgresql":
+            ops.append((
+                "INSERT INTO channel_config (channel_id, guild_id) VALUES (?, ?) "
+                "ON CONFLICT (channel_id) DO NOTHING",
+                (channel_id, guild_id),
+            ))
+        else:
+            ops.append((
+                "INSERT IGNORE INTO channel_config (channel_id, guild_id) VALUES (?, ?)",
+                (channel_id, guild_id),
+            ))
+
+        for col, val in kwargs.items():
+            ops.append((
+                f"UPDATE channel_config SET {col} = ? WHERE channel_id = ?",
+                (val, channel_id),
+            ))
+
+        self._executemany(ops)
+
+    def delete_channel_config(self, channel_id: int) -> None:
+        self._execute("DELETE FROM channel_config WHERE channel_id = ?", (channel_id,))
+
+    def get_all_channel_configs(self, guild_id: int) -> List[Dict]:
+        return self._fetchall(
+            "SELECT * FROM channel_config WHERE guild_id = ?", (guild_id,)
+        )
+
+    # ── Server Config ─────────────────────────────────────────────────────────
+
+    def get_server_config(self, guild_id: int) -> Dict:
+        row = self._fetchone(
+            "SELECT * FROM server_config WHERE guild_id = ?", (guild_id,)
+        )
+        result = dict(self.DEFAULT_SERVER_CONFIG)
+        result["guild_id"] = guild_id
+        if row:
+            result.update(row)
+        return result
+
+    def set_server_config(self, guild_id: int, **kwargs) -> None:
+        invalid = set(kwargs) - VALID_SERVER_CONFIG_COLUMNS
+        if invalid:
+            raise ValueError(f"Columnas inválidas: {invalid}")
+
+        ops = []
+        if self.db_type == "sqlite":
+            ops.append((
+                "INSERT OR IGNORE INTO server_config (guild_id) VALUES (?)",
+                (guild_id,),
+            ))
+        elif self.db_type == "postgresql":
+            ops.append((
+                "INSERT INTO server_config (guild_id) VALUES (?) "
+                "ON CONFLICT (guild_id) DO NOTHING",
+                (guild_id,),
+            ))
+        else:
+            ops.append((
+                "INSERT IGNORE INTO server_config (guild_id) VALUES (?)",
+                (guild_id,),
+            ))
+
+        for col, val in kwargs.items():
+            ops.append((
+                f"UPDATE server_config SET {col} = ? WHERE guild_id = ?",
+                (val, guild_id),
+            ))
+
+        self._executemany(ops)
+
+    # ── Saved Embeds ──────────────────────────────────────────────────────────
+
+    def save_embed(
+        self, guild_id: int, creator_id: int, name: str, embed_data: str
+    ) -> None:
+        self._execute(
+            "INSERT INTO saved_embeds (guild_id, creator_id, name, embed_data, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (guild_id, creator_id, name, embed_data,
+             datetime.now(timezone.utc).isoformat()),
+        )
+
+    def get_saved_embeds(self, guild_id: int) -> List[Dict]:
+        return self._fetchall(
+            "SELECT * FROM saved_embeds WHERE guild_id = ? ORDER BY created_at DESC",
+            (guild_id,),
+        )
+
+    def get_saved_embed_by_name(self, guild_id: int, name: str) -> Optional[Dict]:
+        return self._fetchone(
+            "SELECT * FROM saved_embeds WHERE guild_id = ? AND name = ?",
+            (guild_id, name),
+        )
+
+    def delete_saved_embed(self, embed_id: int) -> None:
+        self._execute("DELETE FROM saved_embeds WHERE id = ?", (embed_id,))
