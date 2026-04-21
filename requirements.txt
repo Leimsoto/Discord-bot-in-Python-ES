@@ -16,3 +16,9 @@ PyNaCl>=1.5.0
 google-genai>=0.3.0
 chat-exporter>=2.5.0
 requests>=2.31.0
+# Extra: extracción de streams de YouTube u otras fuentes (usado por /radio play)
+yt-dlp
+# Requisito opcional para backend de voz según logs: "davey"
+davey
+psycopg2-binary>=2.9.0
+PyMySQL>=1.1.0

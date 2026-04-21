@@ -18,6 +18,8 @@ class LofiRadio(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.db = bot.db # type: ignore
+        # Locks or helpers could ir aquí si es necesario más adelante
+        self._playback_wait = 1.0  # segundos a esperar tras parar una reproducción
         self.lofi_manager.start()
 
     def cog_unload(self):
@@ -68,6 +70,7 @@ class LofiRadio(commands.Cog):
         station_name = cfg.get("station_name", "Lofi Radio 24/7")
 
         try:
+            # Resolve stream_url if needed (may be a playlist); leave resolution to caller where possible
             ffmpeg_options = {
                 'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
                 'options': '-vn'
@@ -100,6 +103,24 @@ class LofiRadio(commands.Cog):
                 pass
         except Exception:
             logger.exception(f"Error reproduciendo radio en el canal {channel.id}")
+
+    def _resolve_stream_sync(self, url: str) -> str:
+        """Resuelve playlists (.m3u/.pls) devolviendo la primera URL directa.
+
+        Método síncrono pensado para ejecutarse en executor y no bloquear el loop.
+        """
+        try:
+            r = requests.get(url, timeout=6)
+            content_type = r.headers.get("content-type", "").lower()
+            text = r.text
+            # Heurística: si la URL termina en m3u/pls o el contenido parece una playlist
+            if url.lower().endswith(('.m3u', '.m3u8', '.pls')) or text.strip().startswith('#') or '[playlist]' in text.lower() or 'audio/x-scpls' in content_type:
+                lines = [l.strip() for l in text.splitlines() if l and not l.strip().startswith('#') and not l.strip().startswith('[')]
+                if lines:
+                    return lines[0]
+        except Exception:
+            pass
+        return url
 
     async def reconnect_stream(self, vc, channel, cfg):
         await asyncio.sleep(2) # Breve pausa para evitar loop infinito rápido
@@ -193,22 +214,39 @@ class LofiRadio(commands.Cog):
                     super().__init__(placeholder="Selecciona una emisora para reproducirla...", min_values=1, max_values=1, options=options)
                     
                 async def callback(self, inter: discord.Interaction):
+                    # Acknowledge the component immediately to avoid 'Unknown interaction' when work takes >3s
+                    try:
+                        await inter.response.defer(ephemeral=True)
+                    except Exception:
+                        pass
+
                     idx = int(self.values[0])
                     station = self.stations[idx]
                     url = station.get("url_resolved")
                     name = station.get("name", "Desconocida")
-                    
-                    # Asegurar columnas y actualizar configuración
+
+                    # Resolve playlists off-loop to avoid blocking
                     try:
-                        self.db._execute("ALTER TABLE lofi_config ADD COLUMN stream_url TEXT", ())
-                        self.db._execute("ALTER TABLE lofi_config ADD COLUMN station_name TEXT", ())
+                        loop = asyncio.get_running_loop()
+                        resolved = await loop.run_in_executor(None, self.cog._resolve_stream_sync, url)
+                    except Exception:
+                        resolved = url
+
+                    # Asegurar columnas y actualizar configuración de forma segura
+                    try:
+                        # use DB helper to avoid ALTER repetidos
+                        self.db.ensure_column("lofi_config", "stream_url", "TEXT")
+                        self.db.ensure_column("lofi_config", "station_name", "TEXT")
                     except Exception:
                         pass
-                        
-                    self.db._upsert_config(
-                        "lofi_config", inter.guild_id, 
-                        stream_url=url, station_name=name, enabled=1
-                    )
+
+                    try:
+                        self.db._upsert_config(
+                            "lofi_config", inter.guild_id,
+                            stream_url=resolved, station_name=name, enabled=1
+                        )
+                    except Exception:
+                        logger.exception("Fallo guardando configuración de la emisora")
 
                     # Aplicar la nueva emisora inmediatamente
                     cfg = self.db.get_lofi_config(inter.guild_id)
@@ -216,7 +254,11 @@ class LofiRadio(commands.Cog):
                     vc = inter.guild.voice_client
 
                     if not channel:
-                        await inter.response.edit_message(content="❌ Canal configurado no encontrado.", view=None)
+                        await inter.followup.send("❌ Canal configurado no encontrado.", ephemeral=True)
+                        try:
+                            await inter.message.edit(view=None)
+                        except Exception:
+                            pass
                         return
 
                     try:
@@ -234,17 +276,30 @@ class LofiRadio(commands.Cog):
                                     pass
 
                         # pequeña pausa para que FFmpeg libere recursos
-                        await asyncio.sleep(0.3)
+                        await asyncio.sleep(self.cog._playback_wait)
 
                         # Iniciar reproducción con la nueva configuración
                         self.cog.start_playing(vc, channel, cfg)
 
                     except Exception as e:
                         logger.exception(f"Error aplicando emisora en {inter.guild.name}: {e}")
-                        await inter.response.edit_message(content=f"❌ Error al aplicar la emisora: {e}", view=None)
+                        await inter.followup.send(f"❌ Error al aplicar la emisora: {e}", ephemeral=True)
+                        try:
+                            await inter.message.edit(view=None)
+                        except Exception:
+                            pass
                         return
 
-                    await inter.response.edit_message(content=f"📻 **Radio cambiada a:** {name}\nSe aplicará en unos segundos.", view=None)
+                    # Confirmación al usuario (ephemeral) y limpiar view
+                    try:
+                        await inter.followup.send(f"📻 **Radio cambiada a:** {name}\nSe aplicará en unos segundos.", ephemeral=True)
+                        try:
+                            await inter.message.edit(view=None)
+                        except Exception:
+                            pass
+                    except Exception:
+                        # Silenciar errores de interacción (posible caducidad)
+                        pass
 
             view = discord.ui.View()
             view.add_item(RadioSelect(data, self.db, self.bot, self))
@@ -254,6 +309,100 @@ class LofiRadio(commands.Cog):
         except Exception as e:
             logger.error(f"Error en radio_search: {e}")
             await interaction.followup.send(f"❌ Error consultando la API de radio: {e}")
+
+    def _extract_ytdl_sync(self, url: str):
+        """Extrae la URL directa de audio usando yt-dlp (sync, para ejecutarse en executor).
+
+        Retorna (stream_url, title, error_msg). Si falta yt-dlp, error_msg contendrá instrucciones.
+        """
+        try:
+            from yt_dlp import YoutubeDL
+        except Exception:
+            return None, None, "La dependencia 'yt-dlp' no está instalada. Instálala: pip install yt-dlp"
+
+        ydl_opts = {"format": "bestaudio/best", "noplaylist": True, "quiet": True, "no_warnings": True}
+        try:
+            with YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                if "entries" in info and info["entries"]:
+                    info = info["entries"][0]
+                stream_url = info.get("url")
+                title = info.get("title") or info.get("webpage_url")
+                return stream_url, title, None
+        except Exception as exc:
+            return None, None, str(exc)
+
+    @radio_group.command(name="play", description="Reproduce audio desde URL (YouTube/Direct). Admin only. Solo si la radio está desactivada.")
+    @app_commands.describe(url="Enlace de YouTube o URL directa de audio")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def play_url(self, interaction: discord.Interaction, url: str):
+        await interaction.response.defer(ephemeral=True)
+
+        cfg = self.db.get_lofi_config(interaction.guild_id)
+        if cfg.get("enabled"):
+            return await interaction.followup.send("❌ La radio 24/7 está activa. Desactívala antes de usar reproducción manual.", ephemeral=True)
+
+        # Determinar canal de voz: preferir el canal del autor si está en uno, sino el configurado
+        channel = None
+        if interaction.user and getattr(interaction.user, 'voice', None) and interaction.user.voice.channel:
+            channel = interaction.user.voice.channel
+        else:
+            ch_id = cfg.get("channel_id")
+            if ch_id:
+                channel = interaction.guild.get_channel(ch_id)
+
+        if not channel or not isinstance(channel, discord.VoiceChannel):
+            return await interaction.followup.send("❌ No se encontró un canal de voz para reproducir. Conéctate a uno o configura uno con /radio setup.", ephemeral=True)
+
+        vc = interaction.guild.voice_client
+        try:
+            if not vc or not vc.is_connected():
+                vc = await channel.connect(reconnect=True)
+            else:
+                if vc.is_playing():
+                    vc.stop()
+                if vc.channel.id != channel.id:
+                    try:
+                        await vc.move_to(channel)
+                    except Exception:
+                        pass
+
+            # Extraer URL con yt-dlp si es YouTube u otras plataformas
+            loop = asyncio.get_running_loop()
+            stream_url = url
+            title = None
+
+            try:
+                # Intentar extracción (silenciosa si falla)
+                res_url, res_title, err = await loop.run_in_executor(None, self._extract_ytdl_sync, url)
+                if err:
+                    # Si yt-dlp no está instalado, informamos al admin y usamos la URL directa
+                    if res_url is None and 'yt-dlp' in (err or ''):
+                        await interaction.followup.send(err + "\nSe usará la URL tal cual.", ephemeral=True)
+                    else:
+                        # otros errores, no bloquear
+                        logger.warning(f"yt-dlp extraction warning: {err}")
+                if res_url:
+                    stream_url = res_url
+                    title = res_title
+            except Exception:
+                pass
+
+            # Reproducir
+            ffmpeg_options = {
+                'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
+                'options': '-vn'
+            }
+            audio_source = discord.FFmpegPCMAudio(stream_url, **ffmpeg_options)
+            if vc.is_playing():
+                vc.stop()
+            vc.play(audio_source)
+
+            display = title or url
+            await interaction.followup.send(f"▶️ Reproduciendo: {display}", ephemeral=True)
+        except Exception as e:
+            logger.exception(f"Error en play_url: {e}")
+            await interaction.followup.send(f"❌ Error al reproducir: {e}", ephemeral=True)
 
 
 async def setup(bot: commands.Bot):

@@ -900,6 +900,48 @@ class DatabaseManager:
             except Exception:
                 pass  # Columna ya existe o error ignorable
 
+    def _has_column(self, table: str, column: str) -> bool:
+        """Comprueba si una tabla tiene una columna (multi-DB)."""
+        try:
+            if self.db_type == "sqlite":
+                rows = self._fetchall(f"PRAGMA table_info('{table}')")
+                return any(r.get("name") == column for r in rows)
+
+            if self.db_type == "mariadb":
+                row = self._fetchone(
+                    "SELECT COUNT(*) as c FROM information_schema.COLUMNS "
+                    "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?",
+                    (table, column),
+                )
+                return bool(row and row.get("c", 0))
+
+            if self.db_type == "postgresql":
+                row = self._fetchone(
+                    "SELECT COUNT(*) as c FROM information_schema.columns "
+                    "WHERE table_name = ? AND column_name = ?",
+                    (table, column),
+                )
+                return bool(row and row.get("c", 0))
+
+        except Exception:
+            return False
+
+        return False
+
+    def ensure_column(self, table: str, column: str, column_def: str) -> None:
+        """Añade una columna si no existe (silencioso si ya existe).
+
+        Uso seguro desde código que puede ejecutarse repetidamente.
+        """
+        try:
+            if self._has_column(table, column):
+                return
+            self._execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_def}", ())
+            logger.info(f"Columna '{column}' añadida en tabla '{table}'")
+        except Exception:
+            # Ignorar si ya existe o si no es soportado por el motor
+            pass
+
     # ── Guild Config ──────────────────────────────────────────────────────────
 
     def get_config(self, guild_id: int) -> Dict:
