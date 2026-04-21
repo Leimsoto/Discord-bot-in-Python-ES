@@ -56,18 +56,42 @@ class TortuguBot(commands.Bot):
 
     def __init__(self):
         super().__init__(
-            command_prefix="!",   # Sin uso real; sólo slash commands
+            command_prefix=[],   # Sin uso real; sólo slash commands
             intents=intents,
             help_command=None,
         )
         # Instancia única de DB compartida por todos los cogs
         self.db = DatabaseManager()
+        self.start_time = discord.utils.utcnow()
 
     async def setup_hook(self) -> None:
         """
         Llamado automáticamente antes de conectar al WebSocket.
         Carga los cogs y sincroniza los comandos slash.
         """
+        from discord.ext import tasks
+        
+        @tasks.loop(seconds=30)
+        async def bot_stats_updater():
+            await self.wait_until_ready()
+            members_online = sum(
+                1 for g in self.guilds for m in g.members 
+                if m.status != discord.Status.offline
+            )
+            total_members = sum(g.member_count or 0 for g in self.guilds)
+            
+            uptime_seconds = int((discord.utils.utcnow() - self.start_time).total_seconds())
+            
+            # Count open tickets
+            open_tickets = 0
+            if hasattr(self, 'db'):
+                try:
+                    open_tickets = len(self.db._fetchall("SELECT id FROM tickets WHERE status = 'OPEN'", ()))
+                except Exception:
+                    pass
+                self.db.update_bot_stats(members_online, total_members, open_tickets, uptime_seconds)
+                
+        bot_stats_updater.start()
         cogs = [
             "cogs.moderation",
             "cogs.info",
@@ -81,6 +105,7 @@ class TortuguBot(commands.Bot):
             "cogs.giveaways",
             "cogs.autoroles",
             "cogs.lofi",
+            "cogs.tickets",
         ]
         for cog in cogs:
             try:

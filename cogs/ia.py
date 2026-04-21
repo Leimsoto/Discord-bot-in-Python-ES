@@ -209,7 +209,7 @@ class IA(commands.Cog):
 
             # Añadir mensaje al historial de Gemini
             self.chat_histories[ctx_id].append(
-                types.Content(role="user", parts=[types.Part.from_text(user_text)])
+                types.Content(role="user", parts=[types.Part.from_text(text=user_text)])
             )
 
             # Mantener máximo 20 interacciones de memoria
@@ -238,7 +238,7 @@ class IA(commands.Cog):
                     
                     # Añadir respuesta de la IA al historial
                     self.chat_histories[ctx_id].append(
-                        types.Content(role="model", parts=[types.Part.from_text(reply_text)])
+                        types.Content(role="model", parts=[types.Part.from_text(text=reply_text)])
                     )
                     
                     # Enviar respuesta

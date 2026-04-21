@@ -208,6 +208,50 @@ CREATE TABLE IF NOT EXISTS lofi_config (
     enabled      INTEGER DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS bot_stats (
+    id             INTEGER PRIMARY KEY DEFAULT 1,
+    members_online INTEGER DEFAULT 0,
+    total_members  INTEGER DEFAULT 0,
+    open_tickets   INTEGER DEFAULT 0,
+    uptime_seconds INTEGER DEFAULT 0,
+    last_updated   TEXT
+);
+
+CREATE TABLE IF NOT EXISTS ticket_config (
+    guild_id              INTEGER PRIMARY KEY,
+    panel_channel_id      INTEGER,
+    category_id           INTEGER,
+    log_channel_id        INTEGER,
+    allowed_roles         TEXT DEFAULT '[]',
+    immune_roles          TEXT DEFAULT '[]',
+    panel_embed_data      TEXT,
+    channel_name_template TEXT DEFAULT '⚒️{username}-{number}'
+);
+
+CREATE TABLE IF NOT EXISTS ticket_categories (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id           INTEGER NOT NULL,
+    name               TEXT NOT NULL,
+    emoji              TEXT,
+    questions          TEXT DEFAULT '[]',
+    close_reasons      TEXT DEFAULT '[]',
+    welcome_embed_data TEXT
+);
+
+CREATE TABLE IF NOT EXISTS tickets (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    global_number INTEGER NOT NULL,
+    guild_id      INTEGER NOT NULL,
+    channel_id    INTEGER,
+    user_id       INTEGER NOT NULL,
+    category_name TEXT NOT NULL,
+    staff_id      INTEGER,
+    status        TEXT DEFAULT 'OPEN',
+    ai_summary    TEXT,
+    created_at    TEXT NOT NULL,
+    closed_at     TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_ur_guild   ON user_records(guild_id);
 CREATE INDEX IF NOT EXISTS idx_ma_target  ON mod_actions(target_id, guild_id);
 CREATE INDEX IF NOT EXISTS idx_ma_time    ON mod_actions(guild_id, created_at);
@@ -367,6 +411,50 @@ CREATE TABLE IF NOT EXISTS lofi_config (
     channel_id   BIGINT,
     volume       INTEGER DEFAULT 100,
     enabled      SMALLINT DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS bot_stats (
+    id             INTEGER PRIMARY KEY DEFAULT 1,
+    members_online INTEGER DEFAULT 0,
+    total_members  INTEGER DEFAULT 0,
+    open_tickets   INTEGER DEFAULT 0,
+    uptime_seconds INTEGER DEFAULT 0,
+    last_updated   TEXT
+);
+
+CREATE TABLE IF NOT EXISTS ticket_config (
+    guild_id              BIGINT PRIMARY KEY,
+    panel_channel_id      BIGINT,
+    category_id           BIGINT,
+    log_channel_id        BIGINT,
+    allowed_roles         TEXT DEFAULT '[]',
+    immune_roles          TEXT DEFAULT '[]',
+    panel_embed_data      TEXT,
+    channel_name_template TEXT DEFAULT '⚒️{username}-{number}'
+);
+
+CREATE TABLE IF NOT EXISTS ticket_categories (
+    id                 BIGSERIAL PRIMARY KEY,
+    guild_id           BIGINT NOT NULL,
+    name               TEXT NOT NULL,
+    emoji              TEXT,
+    questions          TEXT DEFAULT '[]',
+    close_reasons      TEXT DEFAULT '[]',
+    welcome_embed_data TEXT
+);
+
+CREATE TABLE IF NOT EXISTS tickets (
+    id            BIGSERIAL PRIMARY KEY,
+    global_number INTEGER NOT NULL,
+    guild_id      BIGINT NOT NULL,
+    channel_id    BIGINT,
+    user_id       BIGINT NOT NULL,
+    category_name TEXT NOT NULL,
+    staff_id      BIGINT,
+    status        TEXT DEFAULT 'OPEN',
+    ai_summary    TEXT,
+    created_at    TEXT NOT NULL,
+    closed_at     TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_ur_guild  ON user_records(guild_id);
@@ -534,6 +622,52 @@ CREATE TABLE IF NOT EXISTS lofi_config (
     channel_id   BIGINT,
     volume       INT DEFAULT 100,
     enabled      TINYINT DEFAULT 0
+) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS bot_stats (
+    id             INT PRIMARY KEY DEFAULT 1,
+    members_online INT DEFAULT 0,
+    total_members  INT DEFAULT 0,
+    open_tickets   INT DEFAULT 0,
+    uptime_seconds INT DEFAULT 0,
+    last_updated   VARCHAR(50)
+) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS ticket_config (
+    guild_id              BIGINT PRIMARY KEY,
+    panel_channel_id      BIGINT,
+    category_id           BIGINT,
+    log_channel_id        BIGINT,
+    allowed_roles         TEXT,
+    immune_roles          TEXT,
+    panel_embed_data      TEXT,
+    channel_name_template VARCHAR(100) DEFAULT '⚒️{username}-{number}'
+) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS ticket_categories (
+    id                 BIGINT NOT NULL AUTO_INCREMENT,
+    guild_id           BIGINT NOT NULL,
+    name               VARCHAR(100) NOT NULL,
+    emoji              VARCHAR(50),
+    questions          TEXT,
+    close_reasons      TEXT,
+    welcome_embed_data TEXT,
+    PRIMARY KEY (id)
+) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS tickets (
+    id            BIGINT NOT NULL AUTO_INCREMENT,
+    global_number INT NOT NULL,
+    guild_id      BIGINT NOT NULL,
+    channel_id    BIGINT,
+    user_id       BIGINT NOT NULL,
+    category_name VARCHAR(100) NOT NULL,
+    staff_id      BIGINT,
+    status        VARCHAR(20) DEFAULT 'OPEN',
+    ai_summary    TEXT,
+    created_at    VARCHAR(50) NOT NULL,
+    closed_at     VARCHAR(50),
+    PRIMARY KEY (id)
 ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 """
 
@@ -1191,3 +1325,69 @@ class DatabaseManager:
 
     def set_lofi_config(self, guild_id: int, **kwargs) -> None:
         self._upsert_config("lofi_config", guild_id, **kwargs)
+
+    # ── Bot Stats (Web Panel IPC) ─────────────────────────────────────────────
+    def update_bot_stats(self, members_online: int, total_members: int, open_tickets: int, uptime_seconds: int) -> None:
+        ops = []
+        now = datetime.now(timezone.utc).isoformat()
+        if self.db_type == "sqlite":
+            ops.append(("INSERT OR IGNORE INTO bot_stats (id) VALUES (1)", ()))
+        elif self.db_type == "postgresql":
+            ops.append(("INSERT INTO bot_stats (id) VALUES (1) ON CONFLICT (id) DO NOTHING", ()))
+        else:
+            ops.append(("INSERT IGNORE INTO bot_stats (id) VALUES (1)", ()))
+            
+        ops.append((
+            "UPDATE bot_stats SET members_online = ?, total_members = ?, open_tickets = ?, uptime_seconds = ?, last_updated = ? WHERE id = 1",
+            (members_online, total_members, open_tickets, uptime_seconds, now)
+        ))
+        self._executemany(ops)
+
+    def get_bot_stats(self) -> Dict:
+        row = self._fetchone("SELECT * FROM bot_stats WHERE id = 1", ())
+        return row or {"members_online": 0, "total_members": 0, "open_tickets": 0, "uptime_seconds": 0, "last_updated": ""}
+
+    # ── Tickets ───────────────────────────────────────────────────────────────
+    def get_ticket_config(self, guild_id: int) -> Dict:
+        row = self._fetchone("SELECT * FROM ticket_config WHERE guild_id = ?", (guild_id,))
+        return row or {"guild_id": guild_id, "panel_channel_id": None, "category_id": None, "log_channel_id": None, "allowed_roles": "[]", "immune_roles": "[]"}
+
+    def set_ticket_config(self, guild_id: int, **kwargs) -> None:
+        self._upsert_config("ticket_config", guild_id, **kwargs)
+
+    def get_ticket_categories(self, guild_id: int) -> List[Dict]:
+        return self._fetchall("SELECT * FROM ticket_categories WHERE guild_id = ?", (guild_id,))
+
+    def add_ticket_category(self, guild_id: int, name: str, emoji: str, questions: str, close_reasons: str, welcome_embed_data: str = None) -> None:
+        self._execute(
+            "INSERT INTO ticket_categories (guild_id, name, emoji, questions, close_reasons, welcome_embed_data) VALUES (?, ?, ?, ?, ?, ?)",
+            (guild_id, name, emoji, questions, close_reasons, welcome_embed_data)
+        )
+
+    def delete_ticket_category(self, category_id: int) -> None:
+        self._execute("DELETE FROM ticket_categories WHERE id = ?", (category_id,))
+
+    def create_ticket(self, guild_id: int, user_id: int, category_name: str) -> Dict:
+        # Generate global number
+        row = self._fetchone("SELECT MAX(global_number) as max_num FROM tickets WHERE guild_id = ?", (guild_id,))
+        global_num = (row["max_num"] or 0) + 1 if row else 1
+        
+        now = datetime.now(timezone.utc).isoformat()
+        self._execute(
+            "INSERT INTO tickets (global_number, guild_id, user_id, category_name, created_at) VALUES (?, ?, ?, ?, ?)",
+            (global_num, guild_id, user_id, category_name, now)
+        )
+        
+        last = self._fetchone("SELECT * FROM tickets WHERE guild_id = ? AND user_id = ? ORDER BY id DESC LIMIT 1", (guild_id, user_id))
+        return last # type: ignore
+
+    def get_ticket_by_channel(self, channel_id: int) -> Optional[Dict]:
+        return self._fetchone("SELECT * FROM tickets WHERE channel_id = ?", (channel_id,))
+
+    def get_ticket(self, ticket_id: int) -> Optional[Dict]:
+        return self._fetchone("SELECT * FROM tickets WHERE id = ?", (ticket_id,))
+
+    def update_ticket(self, ticket_id: int, **kwargs) -> None:
+        if not kwargs: return
+        ops = [(f"UPDATE tickets SET {col} = ? WHERE id = ?", (val, ticket_id)) for col, val in kwargs.items()]
+        self._executemany(ops)

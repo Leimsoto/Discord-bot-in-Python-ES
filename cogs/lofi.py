@@ -1,5 +1,7 @@
 import logging
 import asyncio
+import requests
+import urllib.parse
 
 import discord
 from discord.ext import commands, tasks
@@ -7,12 +9,11 @@ from discord import app_commands
 
 logger = logging.getLogger(__name__)
 
-# URL Directa de alta disponibilidad de un Stream de Radio Lofi 24/7
-# Se usa un stream de Icecast/Shoutcast directo en lugar de YouTube para evitar desconexiones constantes.
 LOFI_STREAM_URL = "http://lofi.stream.laut.fm/lofi"
+RADIO_API_URL = "http://de1.api.radio-browser.info/json/stations/search"
 
 class LofiRadio(commands.Cog):
-    """Módulo de Radio Lofi 24/7 de alta calidad"""
+    """Módulo de Radio Global y Lofi 24/7"""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -21,20 +22,11 @@ class LofiRadio(commands.Cog):
 
     def cog_unload(self):
         self.lofi_manager.cancel()
-        for vc in self.bot.voice_clients:
-            if hasattr(vc, "is_playing") and vc.is_playing():
-                # We can't use async in sync cog_unload easily without loop tasks,
-                # but discord.py automatically disconnects on shutdown anyway.
-                pass
-
     @tasks.loop(seconds=60)
     async def lofi_manager(self):
-        await self.bot.wait_until_ready()
-        
         for guild in self.bot.guilds:
             cfg = self.db.get_lofi_config(guild.id)
             if not cfg.get("enabled"):
-                # Si estaba conectado y lo desactivaron, desconectar
                 vc = guild.voice_client
                 if vc:
                     await vc.disconnect(force=True)
@@ -54,7 +46,7 @@ class LofiRadio(commands.Cog):
                 try:
                     vc = await channel.connect(reconnect=True)
                 except Exception as e:
-                    logger.warning(f"No se pudo conectar al canal Lofi en {guild.name}: {e}")
+                    logger.warning(f"No se pudo conectar al canal de radio en {guild.name}: {e}")
                     continue
                     
             if vc.channel.id != channel_id:
@@ -64,39 +56,66 @@ class LofiRadio(commands.Cog):
                     continue
 
             if not vc.is_playing():
-                try:
-                    # FFmpeg options optimizations for streaming
-                    ffmpeg_options = {
-                        'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
-                        'options': '-vn'
-                    }
-                    audio_source = discord.FFmpegPCMAudio(LOFI_STREAM_URL, **ffmpeg_options)
-                    
-                    # Apply volume if needed (FFmpegPCMAudio default doesn't support volume directly, 
-                    # PCMVolumeTransformer is needed, but we keep it simple at 100% unless modified).
-                    vol = cfg.get("volume", 100) / 100.0
-                    if vol != 1.0:
-                        audio_source = discord.PCMVolumeTransformer(audio_source, volume=vol)
-                        
-                    vc.play(audio_source)
-                    
-                    # Intentar editar el estado del canal de voz (disponible en nuevas versiones de Discord API)
+                self.start_playing(vc, channel, cfg)
+
+    @lofi_manager.before_loop
+    async def before_lofi_manager(self):
+        await self.bot.wait_until_ready()
+
+    def start_playing(self, vc, channel, cfg):
+        # Allow custom stations from DB in future, for now fallback to default lofi
+        stream_url = cfg.get("stream_url", LOFI_STREAM_URL)
+        station_name = cfg.get("station_name", "Lofi Radio 24/7")
+
+        try:
+            ffmpeg_options = {
+                'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
+                'options': '-vn'
+            }
+            audio_source = discord.FFmpegPCMAudio(stream_url, **ffmpeg_options)
+            
+            vol = cfg.get("volume", 100) / 100.0
+            if vol != 1.0:
+                audio_source = discord.PCMVolumeTransformer(audio_source, volume=vol)
+                
+            # Callback para reiniciar inmediatamente si corta
+            def after_playback(error):
+                if error:
+                    logger.error(f"Error en reproducción de radio: {error}")
+                if cfg.get("enabled"):
+                    # Scheduling next play safely in the event loop
+                    fut = asyncio.run_coroutine_threadsafe(self.reconnect_stream(vc, channel, cfg), self.bot.loop)
                     try:
-                        await channel.edit(status="🎶 Lofi Radio 24/7 | Chill & Relax")
-                    except discord.Forbidden:
+                        fut.result(timeout=5)
+                    except Exception:
                         pass
-                except Exception as e:
-                    logger.error(f"Error reproduciendo Lofi en {guild.name}: {e}")
+                        
+            vc.play(audio_source, after=after_playback)
+            
+            # Cambiar estado
+            fut = asyncio.run_coroutine_threadsafe(channel.edit(status=f"🎶 {station_name} | Chill & Relax"), self.bot.loop)
+            try:
+                fut.result(timeout=5)
+            except Exception:
+                pass
+        except Exception as e:
+            logger.error(f"Error reproduciendo radio en el canal {channel.id}: {e}")
 
+    async def reconnect_stream(self, vc, channel, cfg):
+        await asyncio.sleep(2) # Breve pausa para evitar loop infinito rápido
+        if vc and vc.is_connected() and not vc.is_playing() and cfg.get("enabled"):
+            self.start_playing(vc, channel, cfg)
 
-    @app_commands.command(name="lofi", description="Configura la radio Lofi 24/7 en un canal de voz")
+    radio_group = app_commands.Group(name="radio", description="Configuración de Radio y Lofi 24/7")
+
+    @radio_group.command(name="setup", description="Configura una estación de radio 24/7 en un canal de voz")
     @app_commands.describe(
         canal="Canal de voz donde vivirá el bot",
         estado="Encender (True) o Apagar (False) la radio",
         volumen="Volumen de 1 a 100 (por defecto 100)"
     )
     @app_commands.checks.has_permissions(administrator=True)
-    async def setup_lofi(self, interaction: discord.Interaction, canal: discord.VoiceChannel, estado: bool, volumen: app_commands.Range[int, 1, 100] = 100):
+    async def setup_radio(self, interaction: discord.Interaction, canal: discord.VoiceChannel, estado: bool, volumen: app_commands.Range[int, 1, 100] = 100):
         self.db.set_lofi_config(
             interaction.guild_id,
             channel_id=canal.id,
@@ -105,11 +124,110 @@ class LofiRadio(commands.Cog):
         )
         
         if estado:
-            await interaction.response.send_message(f"📻 **Lofi Radio** activada en {canal.mention}. El bot se conectará en breve (hasta 60s).", ephemeral=True)
+            await interaction.response.send_message(f"📻 **Radio** activada en {canal.mention}. El bot se conectará en breve.", ephemeral=True)
+            # Despertar al bot rápido
+            vc = interaction.guild.voice_client
+            if vc and vc.channel.id != canal.id:
+                await vc.move_to(canal)
         else:
-            await interaction.response.send_message("📻 **Lofi Radio** desactivada.", ephemeral=True)
+            await interaction.response.send_message("📻 **Radio** desactivada.", ephemeral=True)
             if interaction.guild.voice_client:
                 await interaction.guild.voice_client.disconnect()
+
+    @radio_group.command(name="status", description="Consulta el estado y configuración actual de la radio")
+    async def radio_status(self, interaction: discord.Interaction):
+        cfg = self.db.get_lofi_config(interaction.guild_id)
+        if not cfg.get("enabled"):
+            return await interaction.response.send_message("❌ La radio está desactivada en este servidor.", ephemeral=True)
+            
+        canal = interaction.guild.get_channel(cfg["channel_id"])
+        vc = interaction.guild.voice_client
+        
+        status_text = "🟢 Reproduciendo" if (vc and vc.is_playing()) else "🔴 Detenido / Conectando..."
+        station = cfg.get("station_name", "Lofi Radio 24/7")
+        
+        embed = discord.Embed(title="📻 Estado de la Radio", color=discord.Color.blue())
+        embed.add_field(name="Estación", value=f"**{station}**", inline=False)
+        embed.add_field(name="Canal", value=canal.mention if canal else "No encontrado", inline=True)
+        embed.add_field(name="Volumen", value=f"{cfg.get('volume', 100)}%", inline=True)
+        embed.add_field(name="Estado", value=status_text, inline=True)
+        
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @radio_group.command(name="buscar", description="Busca estaciones de radio globales para reproducir")
+    @app_commands.describe(nombre="Nombre, género o país a buscar")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def radio_search(self, interaction: discord.Interaction, nombre: str):
+        await interaction.response.defer(ephemeral=True)
+        
+        # Consultar la API global de radios
+        try:
+            params = {
+                "name": nombre,
+                "limit": 10,
+                "hidebroken": "true",
+                "order": "clickcount",
+                "reverse": "true"
+            }
+            resp = requests.get(RADIO_API_URL, params=params, timeout=5)
+            data = resp.json()
+            
+            if not data:
+                return await interaction.followup.send("❌ No se encontraron estaciones con ese nombre.")
+                
+            options = []
+            for idx, station in enumerate(data[:10]):
+                name = station.get("name", "Desconocida")[:90]
+                options.append(discord.SelectOption(
+                    label=name,
+                    description=f"{station.get('country', '')} - {station.get('tags', '')[:40]}",
+                    value=f"{idx}"
+                ))
+                
+            class RadioSelect(discord.ui.Select):
+                def __init__(self, stations, db, bot):
+                    self.stations = stations
+                    self.db = db
+                    self.bot = bot
+                    super().__init__(placeholder="Selecciona una emisora para reproducirla...", min_values=1, max_values=1, options=options)
+                    
+                async def callback(self, inter: discord.Interaction):
+                    idx = int(self.values[0])
+                    station = self.stations[idx]
+                    url = station["url_resolved"]
+                    name = station["name"]
+                    
+                    cfg = self.db.get_lofi_config(inter.guild_id)
+                    # Necesitamos guardar URL y nombre en db (hacemos alter table o guardamos en una config paralela).
+                    # Por simplicidad, SQLite lo permite. Actualizamos la tabla si hace falta.
+                    # Asumiremos que db._upsert_config funciona con columnas nuevas si están.
+                    
+                    # Para evitar fallos si las columnas no existen, asegurémonos antes de hacerlo.
+                    try:
+                        self.db._execute("ALTER TABLE lofi_config ADD COLUMN stream_url TEXT", ())
+                        self.db._execute("ALTER TABLE lofi_config ADD COLUMN station_name TEXT", ())
+                    except Exception:
+                        pass # Ya existen
+                        
+                    self.db._upsert_config(
+                        "lofi_config", inter.guild_id, 
+                        stream_url=url, station_name=name, enabled=1
+                    )
+                    
+                    vc = inter.guild.voice_client
+                    if vc and vc.is_playing():
+                        vc.stop() # Esto disparará el after_callback que leerá la nueva URL y reconectará
+                        
+                    await inter.response.edit_message(content=f"📻 **Radio cambiada a:** {name}\nSe aplicará en unos segundos.", view=None)
+
+            view = discord.ui.View()
+            view.add_item(RadioSelect(data, self.db, self.bot))
+            
+            await interaction.followup.send("Selecciona la estación que deseas sintonizar:", view=view)
+            
+        except Exception as e:
+            logger.error(f"Error en radio_search: {e}")
+            await interaction.followup.send(f"❌ Error consultando la API de radio: {e}")
 
 
 async def setup(bot: commands.Bot):

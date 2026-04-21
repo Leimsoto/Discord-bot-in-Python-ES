@@ -14,3 +14,5 @@ Flask>=3.0.0
 # ── Extensiones (Nuevos Módulos) ──────────────────────────────────────────────
 PyNaCl>=1.5.0
 google-genai>=0.3.0
+chat-exporter>=2.5.0
+requests>=2.31.0
