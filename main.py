@@ -76,6 +76,11 @@ class TortuguBot(commands.Bot):
             "cogs.embeds",
             "cogs.serverutils",
             "cogs.ia",
+            "cogs.welcomes",
+            "cogs.suggestions",
+            "cogs.giveaways",
+            "cogs.autoroles",
+            "cogs.lofi",
         ]
         for cog in cogs:
             try:

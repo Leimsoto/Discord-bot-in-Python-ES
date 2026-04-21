@@ -146,6 +146,68 @@ CREATE TABLE IF NOT EXISTS saved_embeds (
     created_at   TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS welcome_config (
+    guild_id     INTEGER PRIMARY KEY,
+    channel_id   INTEGER,
+    embed_data   TEXT,
+    enabled      INTEGER DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS boost_config (
+    guild_id     INTEGER PRIMARY KEY,
+    channel_id   INTEGER,
+    embed_data   TEXT,
+    gif_url      TEXT,
+    enabled      INTEGER DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS suggestions_config (
+    guild_id           INTEGER PRIMARY KEY,
+    submit_channel_id  INTEGER,
+    review_channel_id  INTEGER,
+    public_channel_id  INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS suggestions (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id     INTEGER NOT NULL,
+    user_id      INTEGER NOT NULL,
+    message_id   INTEGER,
+    content      TEXT NOT NULL,
+    status       TEXT DEFAULT 'PENDING',
+    upvotes      INTEGER DEFAULT 0,
+    downvotes    INTEGER DEFAULT 0,
+    created_at   TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS giveaways (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id       INTEGER NOT NULL,
+    channel_id     INTEGER NOT NULL,
+    message_id     INTEGER NOT NULL,
+    prize          TEXT NOT NULL,
+    end_time       INTEGER NOT NULL,
+    winners_count  INTEGER DEFAULT 1,
+    req_roles      TEXT,
+    deny_roles     TEXT,
+    participants   TEXT,
+    ended          INTEGER DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS autoroles (
+    message_id   INTEGER PRIMARY KEY,
+    guild_id     INTEGER NOT NULL,
+    channel_id   INTEGER NOT NULL,
+    mapping_data TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS lofi_config (
+    guild_id     INTEGER PRIMARY KEY,
+    channel_id   INTEGER,
+    volume       INTEGER DEFAULT 100,
+    enabled      INTEGER DEFAULT 0
+);
+
 CREATE INDEX IF NOT EXISTS idx_ur_guild   ON user_records(guild_id);
 CREATE INDEX IF NOT EXISTS idx_ma_target  ON mod_actions(target_id, guild_id);
 CREATE INDEX IF NOT EXISTS idx_ma_time    ON mod_actions(guild_id, created_at);
@@ -245,6 +307,68 @@ CREATE TABLE IF NOT EXISTS saved_embeds (
     created_at   TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS welcome_config (
+    guild_id     BIGINT PRIMARY KEY,
+    channel_id   BIGINT,
+    embed_data   TEXT,
+    enabled      SMALLINT DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS boost_config (
+    guild_id     BIGINT PRIMARY KEY,
+    channel_id   BIGINT,
+    embed_data   TEXT,
+    gif_url      TEXT,
+    enabled      SMALLINT DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS suggestions_config (
+    guild_id           BIGINT PRIMARY KEY,
+    submit_channel_id  BIGINT,
+    review_channel_id  BIGINT,
+    public_channel_id  BIGINT
+);
+
+CREATE TABLE IF NOT EXISTS suggestions (
+    id           BIGSERIAL PRIMARY KEY,
+    guild_id     BIGINT NOT NULL,
+    user_id      BIGINT NOT NULL,
+    message_id   BIGINT,
+    content      TEXT NOT NULL,
+    status       TEXT DEFAULT 'PENDING',
+    upvotes      INTEGER DEFAULT 0,
+    downvotes    INTEGER DEFAULT 0,
+    created_at   TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS giveaways (
+    id             BIGSERIAL PRIMARY KEY,
+    guild_id       BIGINT NOT NULL,
+    channel_id     BIGINT NOT NULL,
+    message_id     BIGINT NOT NULL,
+    prize          TEXT NOT NULL,
+    end_time       BIGINT NOT NULL,
+    winners_count  INTEGER DEFAULT 1,
+    req_roles      TEXT,
+    deny_roles     TEXT,
+    participants   TEXT,
+    ended          SMALLINT DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS autoroles (
+    message_id   BIGINT PRIMARY KEY,
+    guild_id     BIGINT NOT NULL,
+    channel_id   BIGINT NOT NULL,
+    mapping_data TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS lofi_config (
+    guild_id     BIGINT PRIMARY KEY,
+    channel_id   BIGINT,
+    volume       INTEGER DEFAULT 100,
+    enabled      SMALLINT DEFAULT 0
+);
+
 CREATE INDEX IF NOT EXISTS idx_ur_guild  ON user_records(guild_id);
 CREATE INDEX IF NOT EXISTS idx_ma_target ON mod_actions(target_id, guild_id);
 CREATE INDEX IF NOT EXISTS idx_ma_time   ON mod_actions(guild_id, created_at);
@@ -342,11 +466,74 @@ CREATE TABLE IF NOT EXISTS saved_embeds (
     id           BIGINT NOT NULL AUTO_INCREMENT,
     guild_id     BIGINT NOT NULL,
     creator_id   BIGINT NOT NULL,
-    name         TEXT,
+    name         VARCHAR(100),
     embed_data   TEXT NOT NULL,
     created_at   VARCHAR(50) NOT NULL,
-    PRIMARY KEY (id),
-    INDEX idx_se_guild (guild_id)
+    PRIMARY KEY (id)
+) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS welcome_config (
+    guild_id     BIGINT PRIMARY KEY,
+    channel_id   BIGINT,
+    embed_data   TEXT,
+    enabled      TINYINT DEFAULT 0
+) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS boost_config (
+    guild_id     BIGINT PRIMARY KEY,
+    channel_id   BIGINT,
+    embed_data   TEXT,
+    gif_url      TEXT,
+    enabled      TINYINT DEFAULT 0
+) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS suggestions_config (
+    guild_id           BIGINT PRIMARY KEY,
+    submit_channel_id  BIGINT,
+    review_channel_id  BIGINT,
+    public_channel_id  BIGINT
+) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS suggestions (
+    id           BIGINT NOT NULL AUTO_INCREMENT,
+    guild_id     BIGINT NOT NULL,
+    user_id      BIGINT NOT NULL,
+    message_id   BIGINT,
+    content      TEXT NOT NULL,
+    status       VARCHAR(20) DEFAULT 'PENDING',
+    upvotes      INT DEFAULT 0,
+    downvotes    INT DEFAULT 0,
+    created_at   VARCHAR(50) NOT NULL,
+    PRIMARY KEY (id)
+) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS giveaways (
+    id             BIGINT NOT NULL AUTO_INCREMENT,
+    guild_id       BIGINT NOT NULL,
+    channel_id     BIGINT NOT NULL,
+    message_id     BIGINT NOT NULL,
+    prize          TEXT NOT NULL,
+    end_time       BIGINT NOT NULL,
+    winners_count  INT DEFAULT 1,
+    req_roles      TEXT,
+    deny_roles     TEXT,
+    participants   TEXT,
+    ended          TINYINT DEFAULT 0,
+    PRIMARY KEY (id)
+) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS autoroles (
+    message_id   BIGINT PRIMARY KEY,
+    guild_id     BIGINT NOT NULL,
+    channel_id   BIGINT NOT NULL,
+    mapping_data TEXT NOT NULL
+) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS lofi_config (
+    guild_id     BIGINT PRIMARY KEY,
+    channel_id   BIGINT,
+    volume       INT DEFAULT 100,
+    enabled      TINYINT DEFAULT 0
 ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 """
 
@@ -906,3 +1093,101 @@ class DatabaseManager:
 
     def update_appeal_status(self, appeal_id: int, status: str) -> None:
         self._execute("UPDATE appeals SET status = ? WHERE id = ?", (status, appeal_id))
+
+    # ── Configuración Genérica ────────────────────────────────────────────────
+    def _upsert_config(self, table: str, guild_id: int, **kwargs):
+        ops = []
+        if self.db_type == "sqlite":
+            ops.append((f"INSERT OR IGNORE INTO {table} (guild_id) VALUES (?)", (guild_id,)))
+        elif self.db_type == "postgresql":
+            ops.append((f"INSERT INTO {table} (guild_id) VALUES (?) ON CONFLICT (guild_id) DO NOTHING", (guild_id,)))
+        else:
+            ops.append((f"INSERT IGNORE INTO {table} (guild_id) VALUES (?)", (guild_id,)))
+        
+        for col, val in kwargs.items():
+            ops.append((f"UPDATE {table} SET {col} = ? WHERE guild_id = ?", (val, guild_id)))
+        self._executemany(ops)
+
+    # ── Welcomes ──────────────────────────────────────────────────────────────
+    def get_welcome_config(self, guild_id: int) -> Dict:
+        row = self._fetchone("SELECT * FROM welcome_config WHERE guild_id = ?", (guild_id,))
+        return row or {"guild_id": guild_id, "channel_id": None, "embed_data": None, "enabled": 0}
+
+    def set_welcome_config(self, guild_id: int, **kwargs) -> None:
+        self._upsert_config("welcome_config", guild_id, **kwargs)
+
+    # ── Boosts ────────────────────────────────────────────────────────────────
+    def get_boost_config(self, guild_id: int) -> Dict:
+        row = self._fetchone("SELECT * FROM boost_config WHERE guild_id = ?", (guild_id,))
+        return row or {"guild_id": guild_id, "channel_id": None, "embed_data": None, "gif_url": None, "enabled": 0}
+
+    def set_boost_config(self, guild_id: int, **kwargs) -> None:
+        self._upsert_config("boost_config", guild_id, **kwargs)
+
+    # ── Suggestions ───────────────────────────────────────────────────────────
+    def get_suggestions_config(self, guild_id: int) -> Dict:
+        row = self._fetchone("SELECT * FROM suggestions_config WHERE guild_id = ?", (guild_id,))
+        return row or {"guild_id": guild_id, "submit_channel_id": None, "review_channel_id": None, "public_channel_id": None}
+
+    def set_suggestions_config(self, guild_id: int, **kwargs) -> None:
+        self._upsert_config("suggestions_config", guild_id, **kwargs)
+
+    def create_suggestion(self, guild_id: int, user_id: int, content: str) -> int:
+        ops = [(
+            "INSERT INTO suggestions (guild_id, user_id, content, created_at) VALUES (?, ?, ?, ?)",
+            (guild_id, user_id, content, datetime.now(timezone.utc).isoformat())
+        )]
+        self._executemany(ops)
+        row = self._fetchone("SELECT id FROM suggestions WHERE guild_id = ? AND user_id = ? ORDER BY id DESC LIMIT 1", (guild_id, user_id))
+        return row["id"] if row else 0
+
+    def get_suggestion(self, suggestion_id: int) -> Optional[Dict]:
+        return self._fetchone("SELECT * FROM suggestions WHERE id = ?", (suggestion_id,))
+
+    def update_suggestion(self, suggestion_id: int, **kwargs) -> None:
+        if not kwargs: return
+        ops = [(f"UPDATE suggestions SET {col} = ? WHERE id = ?", (val, suggestion_id)) for col, val in kwargs.items()]
+        self._executemany(ops)
+
+    # ── Giveaways ─────────────────────────────────────────────────────────────
+    def create_giveaway(self, guild_id: int, channel_id: int, message_id: int, prize: str, end_time: int, winners_count: int, req_roles: str, deny_roles: str) -> None:
+        self._execute(
+            "INSERT INTO giveaways (guild_id, channel_id, message_id, prize, end_time, winners_count, req_roles, deny_roles, participants) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (guild_id, channel_id, message_id, prize, end_time, winners_count, req_roles, deny_roles, "[]")
+        )
+
+    def get_giveaway(self, message_id: int) -> Optional[Dict]:
+        return self._fetchone("SELECT * FROM giveaways WHERE message_id = ?", (message_id,))
+
+    def get_active_giveaways(self) -> List[Dict]:
+        return self._fetchall("SELECT * FROM giveaways WHERE ended = 0", ())
+
+    def update_giveaway(self, message_id: int, **kwargs) -> None:
+        if not kwargs: return
+        ops = [(f"UPDATE giveaways SET {col} = ? WHERE message_id = ?", (val, message_id)) for col, val in kwargs.items()]
+        self._executemany(ops)
+
+    # ── AutoRoles ─────────────────────────────────────────────────────────────
+    def set_autorole(self, message_id: int, guild_id: int, channel_id: int, mapping_data: str) -> None:
+        ops = []
+        if self.db_type == "sqlite":
+            ops.append(("INSERT OR REPLACE INTO autoroles (message_id, guild_id, channel_id, mapping_data) VALUES (?, ?, ?, ?)", (message_id, guild_id, channel_id, mapping_data)))
+        elif self.db_type == "postgresql":
+            ops.append(("INSERT INTO autoroles (message_id, guild_id, channel_id, mapping_data) VALUES (?, ?, ?, ?) ON CONFLICT (message_id) DO UPDATE SET mapping_data = EXCLUDED.mapping_data", (message_id, guild_id, channel_id, mapping_data)))
+        else:
+            ops.append(("INSERT INTO autoroles (message_id, guild_id, channel_id, mapping_data) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE mapping_data=VALUES(mapping_data)", (message_id, guild_id, channel_id, mapping_data)))
+        self._executemany(ops)
+
+    def get_autorole(self, message_id: int) -> Optional[Dict]:
+        return self._fetchone("SELECT * FROM autoroles WHERE message_id = ?", (message_id,))
+
+    def delete_autorole(self, message_id: int) -> None:
+        self._execute("DELETE FROM autoroles WHERE message_id = ?", (message_id,))
+
+    # ── Lofi Config ───────────────────────────────────────────────────────────
+    def get_lofi_config(self, guild_id: int) -> Dict:
+        row = self._fetchone("SELECT * FROM lofi_config WHERE guild_id = ?", (guild_id,))
+        return row or {"guild_id": guild_id, "channel_id": None, "volume": 100, "enabled": 0}
+
+    def set_lofi_config(self, guild_id: int, **kwargs) -> None:
+        self._upsert_config("lofi_config", guild_id, **kwargs)
