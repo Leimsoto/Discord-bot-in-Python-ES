@@ -11,9 +11,11 @@ from discord import app_commands
 try:
     from google import genai
     from google.genai import types
+    from google.genai import errors as genai_errors
 except ImportError:
     genai = None
     types = None
+    genai_errors = None
 
 logger = logging.getLogger(__name__)
 
@@ -158,6 +160,67 @@ class IA(commands.Cog):
             base_prompt += f"\n\nContexto actual del servidor donde te encuentras:\n{srv_ctx}"
         return base_prompt
 
+    async def _generate_content_with_retries(
+        self,
+        model,
+        contents,
+        config,
+        retries: int = 3,
+        initial_backoff: float = 1.0,
+        fallback_models: Optional[List[str]] = None,
+    ):
+        """Intentar generar contenido con reintentos exponenciales y modelos de fallback.
+
+        Ejecuta la llamada bloqueante en un hilo (`asyncio.to_thread`) para no
+        bloquear el loop de eventos.
+        """
+        if fallback_models is None:
+            fallback_models = []
+
+        last_exc: Optional[BaseException] = None
+        for attempt in range(1, retries + 1):
+            try:
+                response = await asyncio.to_thread(
+                    self.client.models.generate_content,
+                    model=model,
+                    contents=contents,
+                    config=config,
+                )
+                return response
+            except Exception as e:  # noqa: BLE001 - manejamos varias excepciones
+                last_exc = e
+
+                # Detectar errores temporales (503 / UNAVAILABLE)
+                retriable = False
+                if genai_errors is not None and isinstance(e, genai_errors.ServerError):
+                    retriable = True
+                else:
+                    msg = str(e).lower()
+                    if "503" in msg or "unavailable" in msg or "high demand" in msg:
+                        retriable = True
+
+                if attempt < retries and retriable:
+                    wait = initial_backoff * (2 ** (attempt - 1))
+                    await asyncio.sleep(wait)
+                    continue
+
+                # Intentar modelos de fallback si se proporcionan
+                for fb in fallback_models:
+                    try:
+                        response = await asyncio.to_thread(
+                            self.client.models.generate_content,
+                            model=fb,
+                            contents=contents,
+                            config=config,
+                        )
+                        return response
+                    except Exception as e_fb:
+                        last_exc = e_fb
+                        continue
+
+                # Si llegamos aquí, re-lanzamos la última excepción
+                raise last_exc
+
     async def _send_via_webhook(self, channel: discord.TextChannel, user: discord.User, text: str):
         webhooks = await channel.webhooks()
         webhook = discord.utils.get(webhooks, name="TortuguBot_IA")
@@ -228,10 +291,15 @@ class IA(commands.Cog):
                         tools=[{"google_search": {}}], # Habilitar Google Search nativo
                     )
                     
-                    response = self.client.models.generate_content(
+                    # Usar la envoltura con reintentos y fallback ligero
+                    fallback = ["gemini-2.5-pro"] if "flash" in model else ["gemini-2.5-flash"]
+                    response = await self._generate_content_with_retries(
                         model=model,
                         contents=self.chat_histories[ctx_id],
-                        config=config
+                        config=config,
+                        retries=3,
+                        initial_backoff=1.0,
+                        fallback_models=fallback,
                     )
                     
                     reply_text = response.text or "No pude generar una respuesta."
