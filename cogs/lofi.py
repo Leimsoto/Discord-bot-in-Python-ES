@@ -45,8 +45,8 @@ class LofiRadio(commands.Cog):
             if not vc or not vc.is_connected():
                 try:
                     vc = await channel.connect(reconnect=True)
-                except Exception as e:
-                    logger.warning(f"No se pudo conectar al canal de radio en {guild.name}: {e}")
+                except Exception:
+                    logger.exception(f"No se pudo conectar al canal de radio en {guild.name}")
                     continue
                     
             if vc.channel.id != channel_id:
@@ -98,8 +98,8 @@ class LofiRadio(commands.Cog):
                 fut.result(timeout=5)
             except Exception:
                 pass
-        except Exception as e:
-            logger.error(f"Error reproduciendo radio en el canal {channel.id}: {e}")
+        except Exception:
+            logger.exception(f"Error reproduciendo radio en el canal {channel.id}")
 
     async def reconnect_stream(self, vc, channel, cfg):
         await asyncio.sleep(2) # Breve pausa para evitar loop infinito rápido
@@ -185,43 +185,69 @@ class LofiRadio(commands.Cog):
                 ))
                 
             class RadioSelect(discord.ui.Select):
-                def __init__(self, stations, db, bot):
+                def __init__(self, stations, db, bot, cog):
                     self.stations = stations
                     self.db = db
                     self.bot = bot
+                    self.cog = cog
                     super().__init__(placeholder="Selecciona una emisora para reproducirla...", min_values=1, max_values=1, options=options)
                     
                 async def callback(self, inter: discord.Interaction):
                     idx = int(self.values[0])
                     station = self.stations[idx]
-                    url = station["url_resolved"]
-                    name = station["name"]
+                    url = station.get("url_resolved")
+                    name = station.get("name", "Desconocida")
                     
-                    cfg = self.db.get_lofi_config(inter.guild_id)
-                    # Necesitamos guardar URL y nombre en db (hacemos alter table o guardamos en una config paralela).
-                    # Por simplicidad, SQLite lo permite. Actualizamos la tabla si hace falta.
-                    # Asumiremos que db._upsert_config funciona con columnas nuevas si están.
-                    
-                    # Para evitar fallos si las columnas no existen, asegurémonos antes de hacerlo.
+                    # Asegurar columnas y actualizar configuración
                     try:
                         self.db._execute("ALTER TABLE lofi_config ADD COLUMN stream_url TEXT", ())
                         self.db._execute("ALTER TABLE lofi_config ADD COLUMN station_name TEXT", ())
                     except Exception:
-                        pass # Ya existen
+                        pass
                         
                     self.db._upsert_config(
                         "lofi_config", inter.guild_id, 
                         stream_url=url, station_name=name, enabled=1
                     )
-                    
+
+                    # Aplicar la nueva emisora inmediatamente
+                    cfg = self.db.get_lofi_config(inter.guild_id)
+                    channel = inter.guild.get_channel(cfg.get("channel_id"))
                     vc = inter.guild.voice_client
-                    if vc and vc.is_playing():
-                        vc.stop() # Esto disparará el after_callback que leerá la nueva URL y reconectará
-                        
+
+                    if not channel:
+                        await inter.response.edit_message(content="❌ Canal configurado no encontrado.", view=None)
+                        return
+
+                    try:
+                        if not vc or not vc.is_connected():
+                            vc = await channel.connect(reconnect=True)
+                        else:
+                            # Si está reproduciendo, pararla para evitar estados inconsistentes
+                            if vc.is_playing():
+                                vc.stop()
+                            # mover si está en otro canal
+                            if vc.channel.id != channel.id:
+                                try:
+                                    await vc.move_to(channel)
+                                except Exception:
+                                    pass
+
+                        # pequeña pausa para que FFmpeg libere recursos
+                        await asyncio.sleep(0.3)
+
+                        # Iniciar reproducción con la nueva configuración
+                        self.cog.start_playing(vc, channel, cfg)
+
+                    except Exception as e:
+                        logger.exception(f"Error aplicando emisora en {inter.guild.name}: {e}")
+                        await inter.response.edit_message(content=f"❌ Error al aplicar la emisora: {e}", view=None)
+                        return
+
                     await inter.response.edit_message(content=f"📻 **Radio cambiada a:** {name}\nSe aplicará en unos segundos.", view=None)
 
             view = discord.ui.View()
-            view.add_item(RadioSelect(data, self.db, self.bot))
+            view.add_item(RadioSelect(data, self.db, self.bot, self))
             
             await interaction.followup.send("Selecciona la estación que deseas sintonizar:", view=view)
             
