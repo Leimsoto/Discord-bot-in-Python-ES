@@ -51,6 +51,8 @@ class ServerUtils(commands.Cog):
 
     async def _send_server_log(self, guild: discord.Guild, embed: discord.Embed) -> None:
         cfg = self.db.get_server_config(guild.id)
+        if not cfg.get("serverlog_enabled", 1):
+            return
         ch_id = cfg.get("serverlog_channel")
         if not ch_id:
             return
@@ -141,11 +143,12 @@ class ServerUtils(commands.Cog):
             r = guild.get_role(rid)
             return r.mention if r else "❌ Rol eliminado"
 
-        def ch_or_none(cid):
+        def ch_or_none(cid, enabled):
+            status = "✅ ON" if enabled else "❌ OFF"
             if not cid:
-                return "❌ No configurado"
+                return f"❌ No configurado ({status})"
             c = guild.get_channel(cid)
-            return c.mention if c else "❌ Canal eliminado"
+            return f"{c.mention if c else '❌ Canal eliminado'} ({status})"
 
         embed = discord.Embed(
             title="🤖 Configuración Global del Bot",
@@ -157,8 +160,16 @@ class ServerUtils(commands.Cog):
         embed.add_field(name="🎨 Rol Embeds", value=role_or_none(srv.get("embed_role_id")), inline=True)
         embed.add_field(name="📺 Rol Canales", value=role_or_none(srv.get("channels_role_id")), inline=True)
         embed.add_field(name="👥 Rol Usuarios", value=role_or_none(srv.get("users_role_id")), inline=True)
-        embed.add_field(name="📋 Canal Mod-Logs", value=ch_or_none(srv.get("modlog_channel")), inline=True)
-        embed.add_field(name="📡 Canal Server-Logs", value=ch_or_none(srv.get("serverlog_channel")), inline=True)
+        embed.add_field(
+            name="📋 Canal Mod-Logs",
+            value=ch_or_none(srv.get("modlog_channel"), srv.get("modlog_enabled", 1)),
+            inline=True,
+        )
+        embed.add_field(
+            name="📡 Canal Server-Logs",
+            value=ch_or_none(srv.get("serverlog_channel"), srv.get("serverlog_enabled", 1)),
+            inline=True,
+        )
         embed.set_footer(text="Usa los botones para modificar")
         return embed
 
@@ -223,15 +234,44 @@ class ServerUtils(commands.Cog):
             return
         embed = discord.Embed(
             title="🗑️ Mensaje eliminado",
-            description=f"**Canal:** {message.channel.mention}\n**Autor:** {message.author.mention}",
+            description=(
+                f"**Canal:** {message.channel.mention} (`{message.channel.id}`)\n"
+                f"**Autor:** {message.author.mention} (`{message.author.id}`)"
+            ),
             color=discord.Color.red(),
             timestamp=datetime.now(timezone.utc),
         )
         content = message.content or "[Sin contenido de texto]"
         if len(content) > 1024:
             content = content[:1021] + "..."
-        embed.add_field(name="Contenido", value=content, inline=False)
-        embed.set_footer(text=f"ID Mensaje: {message.id} | ID Usuario: {message.author.id}")
+        embed.add_field(name="📝 Contenido", value=content, inline=False)
+
+        # ── Multimedia / Archivos adjuntos ────────────────────────────
+        if message.attachments:
+            att_lines = []
+            image_set = False
+            for att in message.attachments:
+                att_lines.append(f"[{att.filename}]({att.url}) ({att.content_type or 'desconocido'})")
+                # Mostrar la primera imagen como imagen del embed
+                if not image_set and att.content_type and att.content_type.startswith("image"):
+                    embed.set_image(url=att.url)
+                    image_set = True
+            embed.add_field(
+                name=f"📎 Archivos adjuntos ({len(message.attachments)})",
+                value="\n".join(att_lines[:5]),
+                inline=False,
+            )
+
+        # ── Embeds del mensaje ────────────────────────────────────────
+        if message.embeds:
+            embed.add_field(
+                name="📋 Embeds",
+                value=f"`{len(message.embeds)}` embed(s) incluido(s)",
+                inline=True,
+            )
+
+        embed.set_footer(text=f"ID Mensaje: {message.id}")
+        embed.set_thumbnail(url=message.author.display_avatar.url)
         await self._send_server_log(message.guild, embed)
 
     @commands.Cog.listener()
@@ -300,22 +340,33 @@ class ServerUtils(commands.Cog):
         if after.channel and not before.channel:
             embed = discord.Embed(
                 title="🔊 Unión a canal de voz",
-                description=f"{member.mention} se unió a **{after.channel.name}**",
+                description=(
+                    f"**Usuario:** {member.mention} (`{member.id}`)\n"
+                    f"**Canal:** {after.channel.mention} (`{after.channel.id}`)"
+                ),
                 color=discord.Color.green(), timestamp=datetime.now(timezone.utc),
             )
         elif before.channel and not after.channel:
             embed = discord.Embed(
                 title="🔇 Salida de canal de voz",
-                description=f"{member.mention} salió de **{before.channel.name}**",
+                description=(
+                    f"**Usuario:** {member.mention} (`{member.id}`)\n"
+                    f"**Canal:** {before.channel.mention} (`{before.channel.id}`)"
+                ),
                 color=discord.Color.orange(), timestamp=datetime.now(timezone.utc),
             )
         else:
             embed = discord.Embed(
                 title="🔀 Cambio de canal de voz",
-                description=f"{member.mention}: **{before.channel.name}** → **{after.channel.name}**",
+                description=(
+                    f"**Usuario:** {member.mention} (`{member.id}`)\n"
+                    f"**De:** {before.channel.mention} (`{before.channel.id}`)\n"
+                    f"**A:** {after.channel.mention} (`{after.channel.id}`)"
+                ),
                 color=discord.Color.blue(), timestamp=datetime.now(timezone.utc),
             )
-        embed.set_footer(text=f"ID: {member.id}")
+        embed.set_thumbnail(url=member.display_avatar.url)
+        embed.set_footer(text=f"ID Usuario: {member.id}")
         await self._send_server_log(member.guild, embed)
 
     @commands.Cog.listener()
@@ -329,26 +380,74 @@ class ServerUtils(commands.Cog):
             if added or removed:
                 embed = discord.Embed(
                     title="🏷️ Cambio de roles",
-                    description=f"**Usuario:** {after.mention}",
+                    description=f"**Usuario:** {after.mention} (`{after.id}`)",
                     color=discord.Color.purple(), timestamp=datetime.now(timezone.utc),
                 )
                 if added:
                     embed.add_field(name="➕ Añadidos", value=", ".join(r.mention for r in added), inline=False)
                 if removed:
                     embed.add_field(name="➖ Removidos", value=", ".join(r.mention for r in removed), inline=False)
-                embed.set_footer(text=f"ID: {after.id}")
+                embed.set_thumbnail(url=after.display_avatar.url)
+                embed.set_footer(text=f"ID Usuario: {after.id}")
                 await self._send_server_log(before.guild, embed)
 
         # Cambio de nickname
         if events.get("nickname_changes") and before.nick != after.nick:
             embed = discord.Embed(
                 title="📛 Cambio de nickname",
-                description=f"**Usuario:** {after.mention}",
+                description=f"**Usuario:** {after.mention} (`{after.id}`)",
                 color=discord.Color.teal(), timestamp=datetime.now(timezone.utc),
             )
             embed.add_field(name="Antes", value=before.nick or before.name, inline=True)
             embed.add_field(name="Después", value=after.nick or after.name, inline=True)
-            embed.set_footer(text=f"ID: {after.id}")
+            embed.set_thumbnail(url=after.display_avatar.url)
+            embed.set_footer(text=f"ID Usuario: {after.id}")
+            await self._send_server_log(before.guild, embed)
+
+    @commands.Cog.listener()
+    async def on_guild_channel_update(self, before: discord.abc.GuildChannel, after: discord.abc.GuildChannel):
+        """Detecta cambios de permisos, nombre o categoría en canales."""
+        events = self._get_log_events(before.guild.id)
+        if not events.get("channel_updates", True):
+            return
+
+        # Cambio de nombre
+        if before.name != after.name:
+            embed = discord.Embed(
+                title="📝 Canal renombrado",
+                description=(
+                    f"**Canal:** {after.mention} (`{after.id}`)\n"
+                    f"**Antes:** `#{before.name}`\n**Después:** `#{after.name}`"
+                ),
+                color=discord.Color.blue(), timestamp=datetime.now(timezone.utc),
+            )
+            embed.set_footer(text=f"ID Canal: {after.id}")
+            await self._send_server_log(before.guild, embed)
+
+        # Cambio de permisos (overwrites)
+        if before.overwrites != after.overwrites:
+            embed = discord.Embed(
+                title="🔐 Permisos de canal modificados",
+                description=f"**Canal:** {after.mention} (`{after.id}`)",
+                color=discord.Color.dark_gold(), timestamp=datetime.now(timezone.utc),
+            )
+            # Detectar qué target cambió
+            all_targets = set(list(before.overwrites.keys()) + list(after.overwrites.keys()))
+            changes = []
+            for target in all_targets:
+                old_ow = before.overwrites.get(target)
+                new_ow = after.overwrites.get(target)
+                if old_ow != new_ow:
+                    target_name = target.mention if hasattr(target, 'mention') else str(target)
+                    if not old_ow:
+                        changes.append(f"➕ Permisos añadidos para {target_name}")
+                    elif not new_ow:
+                        changes.append(f"➖ Permisos removidos para {target_name}")
+                    else:
+                        changes.append(f"✏️ Permisos modificados para {target_name}")
+            if changes:
+                embed.add_field(name="Cambios", value="\n".join(changes[:10]), inline=False)
+            embed.set_footer(text=f"ID Canal: {after.id}")
             await self._send_server_log(before.guild, embed)
 
 
@@ -391,11 +490,25 @@ class GlobalConfigView(discord.ui.View):
     async def modlog_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.edit_message(view=ChannelSelectConfigView(self, "modlog_channel"))
 
-    @discord.ui.button(label="Canal Server-Logs", emoji="📡", style=discord.ButtonStyle.secondary, row=2)
+    @discord.ui.button(label="Toggle Mod-Logs", emoji="🎚️", style=discord.ButtonStyle.primary, row=2)
+    async def toggle_modlog_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        srv = self.cog.db.get_server_config(interaction.guild_id)
+        current = bool(srv.get("modlog_enabled", 1))
+        self.cog.db.set_server_config(interaction.guild_id, modlog_enabled=int(not current))
+        await self._refresh(interaction)
+
+    @discord.ui.button(label="Canal Server-Logs", emoji="📡", style=discord.ButtonStyle.secondary, row=3)
     async def serverlog_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.edit_message(view=ChannelSelectConfigView(self, "serverlog_channel"))
 
-    @discord.ui.button(label="Cerrar", emoji="❌", style=discord.ButtonStyle.danger, row=3)
+    @discord.ui.button(label="Toggle Server-Logs", emoji="🎚️", style=discord.ButtonStyle.primary, row=3)
+    async def toggle_serverlog_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        srv = self.cog.db.get_server_config(interaction.guild_id)
+        current = bool(srv.get("serverlog_enabled", 1))
+        self.cog.db.set_server_config(interaction.guild_id, serverlog_enabled=int(not current))
+        await self._refresh(interaction)
+
+    @discord.ui.button(label="Cerrar", emoji="❌", style=discord.ButtonStyle.danger, row=4)
     async def close_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.edit_message(content="✅ Panel cerrado.", embed=None, view=None)
         self.stop()

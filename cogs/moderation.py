@@ -221,8 +221,10 @@ class Moderation(commands.Cog):
     # ── Helpers privados ──────────────────────────────────────────────────────
 
     async def _send_log(self, guild: discord.Guild, embed: discord.Embed) -> None:
-        cfg = self.db.get_config(guild.id)
-        ch_id = cfg.get("log_channel_id")
+        srv_cfg = self.db.get_server_config(guild.id)
+        if not srv_cfg.get("modlog_enabled", 1):
+            return
+        ch_id = srv_cfg.get("modlog_channel")
         if not ch_id:
             return
         channel = guild.get_channel(ch_id)
@@ -841,7 +843,9 @@ class Moderation(commands.Cog):
     def _build_config_embed(self, guild: discord.Guild, cfg: dict) -> discord.Embed:
         """Construye el embed de estado de configuración de moderación."""
         mute_role = guild.get_role(cfg.get("mute_role_id") or 0)
-        log_ch = guild.get_channel(cfg.get("log_channel_id") or 0)
+        # Leer canal de mod-logs desde config global
+        srv_cfg = self.db.get_server_config(guild.id)
+        log_ch = guild.get_channel(srv_cfg.get("modlog_channel") or 0)
 
         embed = discord.Embed(
             title="⚙️ Panel de Configuración de Moderación",
@@ -855,8 +859,8 @@ class Moderation(commands.Cog):
             inline=True,
         )
         embed.add_field(
-            name="📝 Canal de Logs",
-            value=log_ch.mention if log_ch else "❌ No configurado",
+            name="📝 Canal Mod-Logs",
+            value=log_ch.mention if log_ch else "⚠️ Configura en `/config`",
             inline=True,
         )
         embed.add_field(
@@ -879,7 +883,7 @@ class Moderation(commands.Cog):
             value="✅ Personalizado" if cfg.get("warn_embed_config") else "📋 Por defecto",
             inline=True,
         )
-        embed.set_footer(text="Usa los botones para modificar la configuración")
+        embed.set_footer(text="Usa los botones para modificar · Mod-Logs se configura en /config")
         return embed
 
     @modconfig.error
@@ -931,10 +935,7 @@ class ModConfigView(discord.ui.View):
         view = MuteRoleSelectView(self)
         await interaction.response.edit_message(view=view)
 
-    @discord.ui.button(label="Canal de Logs", emoji="📝", style=discord.ButtonStyle.primary, row=0)
-    async def log_channel_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        view = LogChannelSelectView(self)
-        await interaction.response.edit_message(view=view)
+
 
     @discord.ui.button(label="Duración Mute", emoji="⏱️", style=discord.ButtonStyle.primary, row=0)
     async def mute_duration_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -981,25 +982,6 @@ class MuteRoleSelectView(discord.ui.View):
         await interaction.response.edit_message(embed=embed, view=self.parent)
 
 
-class LogChannelSelectView(discord.ui.View):
-    def __init__(self, parent: ModConfigView):
-        super().__init__(timeout=60)
-        self.parent = parent
-
-    @discord.ui.select(cls=discord.ui.ChannelSelect, placeholder="Selecciona el canal de logs",
-                       channel_types=[discord.ChannelType.text], min_values=1, max_values=1)
-    async def select_channel(self, interaction: discord.Interaction, select: discord.ui.ChannelSelect):
-        channel = select.values[0]
-        self.parent.cog.db.set_config(interaction.guild_id, log_channel_id=channel.id)
-        cfg = self.parent.cog.db.get_config(interaction.guild_id)
-        embed = self.parent.cog._build_config_embed(interaction.guild, cfg)
-        await interaction.response.edit_message(embed=embed, view=self.parent)
-
-    @discord.ui.button(label="Volver", emoji="◀️", style=discord.ButtonStyle.secondary)
-    async def back(self, interaction: discord.Interaction, button: discord.ui.Button):
-        cfg = self.parent.cog.db.get_config(interaction.guild_id)
-        embed = self.parent.cog._build_config_embed(interaction.guild, cfg)
-        await interaction.response.edit_message(embed=embed, view=self.parent)
 
 
 class MuteDurationConfigModal(discord.ui.Modal, title="Duración del auto-mute"):

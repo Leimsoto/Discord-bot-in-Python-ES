@@ -122,6 +122,12 @@ class TortuguBot(commands.Bot):
         else:
             await interaction.followup.send(msg, ephemeral=True)
 
+    async def on_command_error(self, ctx: commands.Context, error: commands.CommandError) -> None:
+        """Silencia errores de comandos prefix no encontrados (ej. !hug)."""
+        if isinstance(error, commands.CommandNotFound):
+            return
+        logger.debug("Error de prefix command (ignorado): %s", error)
+
 
 # ── Arranque ──────────────────────────────────────────────────────────────────
 

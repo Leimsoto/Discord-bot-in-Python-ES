@@ -315,30 +315,29 @@ class Users(commands.Cog):
 
         await interaction.response.defer(ephemeral=True)
 
-        messages = []
+        # Recolectar mensajes de TODOS los canales antes de ordenar
+        all_messages = []
+        scan_limit = max(cantidad * 3, 100)  # Escanear suficiente por canal
+
         for channel in interaction.guild.text_channels:
-            if len(messages) >= cantidad:
-                break
             try:
                 perms = channel.permissions_for(interaction.guild.me)
                 if not perms.read_message_history:
                     continue
-                async for msg in channel.history(limit=200):
+                async for msg in channel.history(limit=scan_limit):
                     if msg.author.id == usuario.id:
-                        messages.append(msg)
-                        if len(messages) >= cantidad:
-                            break
+                        all_messages.append(msg)
             except (discord.Forbidden, discord.HTTPException):
                 continue
 
-        if not messages:
+        if not all_messages:
             return await interaction.followup.send(
                 f"❌ No se encontraron mensajes de {usuario.mention}.", ephemeral=True,
             )
 
-        # Ordenar por fecha descendente
-        messages.sort(key=lambda m: m.created_at, reverse=True)
-        messages = messages[:cantidad]
+        # Ordenar TODOS por fecha descendente y tomar los N más recientes
+        all_messages.sort(key=lambda m: m.created_at, reverse=True)
+        messages = all_messages[:cantidad]
 
         # Construir páginas
         pages = []

@@ -45,6 +45,7 @@ VALID_CHANNEL_CONFIG_COLUMNS = frozenset({
 VALID_SERVER_CONFIG_COLUMNS = frozenset({
     "staff_role_id", "modlog_channel", "serverlog_channel", "log_events",
     "embed_role_id", "channels_role_id", "users_role_id",
+    "modlog_enabled", "serverlog_enabled",
 })
 
 
@@ -104,7 +105,9 @@ CREATE TABLE IF NOT EXISTS server_config (
     log_events        TEXT,
     embed_role_id     INTEGER,
     channels_role_id  INTEGER,
-    users_role_id     INTEGER
+    users_role_id     INTEGER,
+    modlog_enabled    INTEGER DEFAULT 1,
+    serverlog_enabled INTEGER DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS saved_embeds (
@@ -179,7 +182,9 @@ CREATE TABLE IF NOT EXISTS server_config (
     log_events        TEXT,
     embed_role_id     BIGINT,
     channels_role_id  BIGINT,
-    users_role_id     BIGINT
+    users_role_id     BIGINT,
+    modlog_enabled    SMALLINT DEFAULT 1,
+    serverlog_enabled SMALLINT DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS saved_embeds (
@@ -256,7 +261,9 @@ CREATE TABLE IF NOT EXISTS server_config (
     log_events        TEXT,
     embed_role_id     BIGINT,
     channels_role_id  BIGINT,
-    users_role_id     BIGINT
+    users_role_id     BIGINT,
+    modlog_enabled    TINYINT DEFAULT 1,
+    serverlog_enabled TINYINT DEFAULT 1
 ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS saved_embeds (
@@ -299,6 +306,8 @@ class DatabaseManager:
         "embed_role_id": None,
         "channels_role_id": None,
         "users_role_id": None,
+        "modlog_enabled": 1,
+        "serverlog_enabled": 1,
     }
 
     DEFAULT_CHANNEL_CONFIG: Dict[str, Any] = {
