@@ -234,11 +234,26 @@ class Moderation(commands.Cog):
             except discord.Forbidden:
                 logger.warning("Sin permisos para enviar logs en %s", guild.name)
 
-    async def _dm(self, user: discord.Member, embed: discord.Embed) -> None:
+    async def _dm(self, user: discord.Member, embed: discord.Embed, view: Optional[discord.ui.View] = None) -> None:
         try:
-            await user.send(embed=embed)
+            if view:
+                await user.send(embed=embed, view=view)
+            else:
+                await user.send(embed=embed)
         except (discord.Forbidden, discord.HTTPException):
             pass
+
+    def _has_mod_perms(self, interaction: discord.Interaction, perm_name: str) -> bool:
+        user = interaction.user
+        if getattr(user.guild_permissions, "administrator", False):
+            return True
+        if getattr(user.guild_permissions, perm_name, False):
+            return True
+        srv = self.db.get_server_config(interaction.guild_id)
+        r_ids = [r.id for r in user.roles]
+        if srv.get("mod_role_id") in r_ids or srv.get("staff_role_id") in r_ids:
+            return True
+        return False
 
     def _can_moderate(
         self, actor: discord.Member, target: discord.Member
@@ -325,7 +340,6 @@ class Moderation(commands.Cog):
         razon="Razón del ban",
         eliminar_mensajes="Días de mensajes a eliminar (0-7, por defecto 0)",
     )
-    @app_commands.checks.has_permissions(ban_members=True)
     async def ban(
         self,
         interaction: discord.Interaction,
@@ -333,12 +347,17 @@ class Moderation(commands.Cog):
         razon: str = "Sin razón especificada",
         eliminar_mensajes: app_commands.Range[int, 0, 7] = 0,
     ):
+        if not self._has_mod_perms(interaction, "ban_members"):
+            return await interaction.response.send_message("❌ No tienes permisos para usar este comando.", ephemeral=True)
+
         err = self._can_moderate(interaction.user, usuario)  # type: ignore
         if err:
             return await interaction.response.send_message(f"❌ {err}", ephemeral=True)
 
         await interaction.response.defer()
 
+        # Enviar DM con opción de apelación
+        view = AppealUserView(self.bot, interaction.guild_id, "BAN", razon)
         await self._dm(
             usuario,
             discord.Embed(
@@ -347,6 +366,7 @@ class Moderation(commands.Cog):
                 color=discord.Color.dark_red(),
             ).add_field(name="Razón", value=razon)
              .add_field(name="Moderador", value=interaction.user.display_name),
+            view=view
         )
 
         await usuario.ban(
@@ -386,13 +406,15 @@ class Moderation(commands.Cog):
         user_id="ID numérica del usuario a desbanear",
         razon="Razón del desbaneo",
     )
-    @app_commands.checks.has_permissions(ban_members=True)
     async def unban(
         self,
         interaction: discord.Interaction,
         user_id: str,
         razon: str = "Sin razón especificada",
     ):
+        if not self._has_mod_perms(interaction, "ban_members"):
+            return await interaction.response.send_message("❌ No tienes permisos para usar este comando.", ephemeral=True)
+
         await interaction.response.defer()
 
         try:
@@ -434,19 +456,22 @@ class Moderation(commands.Cog):
 
     @app_commands.command(name="kick", description="Expulsa a un usuario del servidor")
     @app_commands.describe(usuario="Usuario a expulsar", razon="Razón de la expulsión")
-    @app_commands.checks.has_permissions(kick_members=True)
     async def kick(
         self,
         interaction: discord.Interaction,
         usuario: discord.Member,
         razon: str = "Sin razón especificada",
     ):
+        if not self._has_mod_perms(interaction, "kick_members"):
+            return await interaction.response.send_message("❌ No tienes permisos para usar este comando.", ephemeral=True)
+
         err = self._can_moderate(interaction.user, usuario)  # type: ignore
         if err:
             return await interaction.response.send_message(f"❌ {err}", ephemeral=True)
 
         await interaction.response.defer()
 
+        view = AppealUserView(self.bot, interaction.guild_id, "KICK", razon)
         await self._dm(
             usuario,
             discord.Embed(
@@ -455,6 +480,7 @@ class Moderation(commands.Cog):
                 color=discord.Color.orange(),
             ).add_field(name="Razón", value=razon)
              .add_field(name="Moderador", value=interaction.user.display_name),
+            view=view
         )
 
         await usuario.kick(reason=f"{razon} | Mod: {interaction.user}")
@@ -488,7 +514,6 @@ class Moderation(commands.Cog):
         duracion="Duración: 30m, 2h, 1d, 1w — omitir para permanente",
         razon="Razón del mute",
     )
-    @app_commands.checks.has_permissions(manage_roles=True)
     async def mute(
         self,
         interaction: discord.Interaction,
@@ -496,6 +521,8 @@ class Moderation(commands.Cog):
         duracion: Optional[str] = None,
         razon: str = "Sin razón especificada",
     ):
+        if not self._has_mod_perms(interaction, "manage_roles"):
+            return await interaction.response.send_message("❌ No tienes permisos para usar este comando.", ephemeral=True)
         cfg = self.db.get_config(interaction.guild_id)
         mute_role = interaction.guild.get_role(cfg.get("mute_role_id") or 0)
 
@@ -548,6 +575,7 @@ class Moderation(commands.Cog):
         await interaction.response.send_message(embed=embed)
         await self._send_log(interaction.guild, embed)
 
+        view = AppealUserView(self.bot, interaction.guild_id, "MUTE", razon)
         await self._dm(
             usuario,
             discord.Embed(
@@ -556,6 +584,7 @@ class Moderation(commands.Cog):
                 color=discord.Color.red(),
             ).add_field(name="Duración", value=fmt_duration(secs))
              .add_field(name="Razón", value=razon),
+            view=view
         )
 
     @mute.error
@@ -568,13 +597,14 @@ class Moderation(commands.Cog):
 
     @app_commands.command(name="unmute", description="Quita el silencio a un usuario")
     @app_commands.describe(usuario="Usuario a desilenciar", razon="Razón del unmute")
-    @app_commands.checks.has_permissions(manage_roles=True)
     async def unmute(
         self,
         interaction: discord.Interaction,
         usuario: discord.Member,
         razon: str = "Sin razón especificada",
     ):
+        if not self._has_mod_perms(interaction, "manage_roles"):
+            return await interaction.response.send_message("❌ No tienes permisos para usar este comando.", ephemeral=True)
         cfg = self.db.get_config(interaction.guild_id)
         mute_role = interaction.guild.get_role(cfg.get("mute_role_id") or 0)
 
@@ -624,13 +654,14 @@ class Moderation(commands.Cog):
 
     @app_commands.command(name="warn", description="Advierte a un usuario (con consecuencias configurables)")
     @app_commands.describe(usuario="Usuario a advertir", razon="Razón de la advertencia")
-    @app_commands.checks.has_permissions(moderate_members=True)
     async def warn(
         self,
         interaction: discord.Interaction,
         usuario: discord.Member,
         razon: str = "Sin razón especificada",
     ):
+        if not self._has_mod_perms(interaction, "moderate_members"):
+            return await interaction.response.send_message("❌ No tienes permisos para usar este comando.", ephemeral=True)
         err = self._can_moderate(interaction.user, usuario)  # type: ignore
         if err:
             return await interaction.response.send_message(f"❌ {err}", ephemeral=True)
@@ -647,7 +678,9 @@ class Moderation(commands.Cog):
         warn_embed = build_warn_embed(cfg, usuario, interaction.user, razon, warns)  # type: ignore
         await interaction.followup.send(embed=warn_embed)
         await self._send_log(interaction.guild, warn_embed)
-        await self._dm(usuario, warn_embed)
+        
+        view = AppealUserView(self.bot, interaction.guild_id, "WARN", razon)
+        await self._dm(usuario, warn_embed, view=view)
 
         # ── Consecuencias automáticas (de mayor a menor severidad) ────────────
 
@@ -787,13 +820,14 @@ class Moderation(commands.Cog):
 
     @app_commands.command(name="clearwarns", description="Limpia todos los warns de un usuario")
     @app_commands.describe(usuario="Usuario al que limpiar los warns", razon="Razón del reseteo")
-    @app_commands.checks.has_permissions(administrator=True)
     async def clearwarns(
         self,
         interaction: discord.Interaction,
         usuario: discord.Member,
         razon: str = "Sin razón especificada",
     ):
+        if not self._has_mod_perms(interaction, "administrator"):
+            return await interaction.response.send_message("❌ No tienes permisos para usar este comando.", ephemeral=True)
         record = self.db.get_user(usuario.id, interaction.guild_id)
         old = record["warns"]
 
@@ -1081,6 +1115,189 @@ class ConsequencesToggleView(discord.ui.View):
         cfg = self.parent.cog.db.get_config(interaction.guild_id)
         embed = self.parent.cog._build_config_embed(interaction.guild, cfg)
         await interaction.response.edit_message(embed=embed, view=self.parent)
+
+
+# ── Appeals UI ────────────────────────────────────────────────────────────────
+
+class AppealUserModal(discord.ui.Modal, title="Apelar Sanción"):
+    appeal_text = discord.ui.TextInput(
+        label="¿Por qué deberíamos retirar tu sanción?",
+        style=discord.TextStyle.paragraph,
+        placeholder="Explica tu situación detalladamente...",
+        required=True,
+        max_length=1000
+    )
+
+    def __init__(self, bot: commands.Bot, guild_id: int, action_type: str, reason: str):
+        super().__init__()
+        self.bot = bot
+        self.guild_id = guild_id
+        self.action_type = action_type
+        self.reason = reason
+
+    async def on_submit(self, interaction: discord.Interaction):
+        db = getattr(self.bot, 'db')
+        appeal_id = db.create_appeal(
+            self.guild_id, interaction.user.id, self.action_type, self.reason, self.appeal_text.value
+        )
+        await interaction.response.send_message("✅ Tu apelación ha sido enviada al equipo de moderación. Recibirás un DM con la respuesta.", ephemeral=True)
+        
+        guild = self.bot.get_guild(self.guild_id)
+        if not guild: return
+        srv_cfg = db.get_server_config(self.guild_id)
+        modlog_id = srv_cfg.get("modlog_channel")
+        if not modlog_id: return
+        modlog = guild.get_channel(modlog_id)
+        if not modlog: return
+
+        embed = discord.Embed(
+            title="📩 Nueva Apelación Recibida",
+            color=discord.Color.blue(),
+            timestamp=datetime.now(timezone.utc)
+        )
+        embed.add_field(name="Usuario", value=f"{interaction.user.mention} (`{interaction.user.id}`)", inline=False)
+        embed.add_field(name="Sanción", value=self.action_type, inline=True)
+        embed.add_field(name="Razón Original", value=self.reason, inline=True)
+        embed.add_field(name="Defensa del Usuario", value=self.appeal_text.value, inline=False)
+        embed.set_footer(text=f"ID Apelación: {appeal_id}")
+        
+        await modlog.send(embed=embed, view=AppealModView(self.bot, appeal_id, interaction.user.id, self.action_type))
+
+
+class AppealUserView(discord.ui.View):
+    def __init__(self, bot: commands.Bot, guild_id: int, action_type: str, reason: str):
+        super().__init__(timeout=86400)
+        self.bot = bot
+        self.guild_id = guild_id
+        self.action_type = action_type
+        self.reason = reason
+
+    @discord.ui.button(label="Apelar Sanción", style=discord.ButtonStyle.primary, emoji="📝")
+    async def appeal_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(AppealUserModal(self.bot, self.guild_id, self.action_type, self.reason))
+        button.disabled = True
+        await interaction.message.edit(view=self)
+
+
+class AppealAcceptModal(discord.ui.Modal, title="Aceptar Apelación"):
+    mod_reason = discord.ui.TextInput(
+        label="Mensaje para el usuario",
+        style=discord.TextStyle.paragraph,
+        placeholder="Ej: Se retirará tu sanción porque...",
+        required=True
+    )
+    auto_remove = discord.ui.TextInput(
+        label="¿Quitar sanción automáticamente? (SI/NO)",
+        style=discord.TextStyle.short,
+        default="SI",
+        required=True
+    )
+
+    def __init__(self, bot: commands.Bot, appeal_id: int, user_id: int, action_type: str):
+        super().__init__()
+        self.bot = bot
+        self.appeal_id = appeal_id
+        self.user_id = user_id
+        self.action_type = action_type
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        db = getattr(self.bot, 'db')
+        db.update_appeal_status(self.appeal_id, "ACCEPTED")
+        guild = interaction.guild
+        member = guild.get_member(self.user_id) or self.bot.get_user(self.user_id)
+        
+        auto_text = self.auto_remove.value.strip().upper()
+        if auto_text == "SI" and guild:
+            try:
+                if self.action_type == "BAN":
+                    await guild.unban(discord.Object(id=self.user_id), reason=f"Apelación Aceptada por {interaction.user}")
+                elif self.action_type == "MUTE":
+                    mem = guild.get_member(self.user_id)
+                    if mem: await mem.timeout(None, reason=f"Apelación Aceptada por {interaction.user}")
+            except Exception as e:
+                logger.error(f"Error quitando sancion: {e}")
+
+        if member:
+            embed = discord.Embed(
+                title="✅ Apelación Aceptada",
+                description=f"Tu apelación en **{guild.name}** ha sido aceptada.",
+                color=discord.Color.green()
+            )
+            embed.add_field(name="Sanción Original", value=self.action_type)
+            embed.add_field(name="Mensaje del Moderador", value=self.mod_reason.value, inline=False)
+            try:
+                await member.send(embed=embed)
+            except: pass
+        
+        embed = interaction.message.embeds[0]
+        embed.color = discord.Color.green()
+        embed.title = "✅ Apelación Aceptada"
+        embed.add_field(name="Moderador", value=interaction.user.mention, inline=False)
+        embed.add_field(name="Motivo de Aceptación", value=self.mod_reason.value, inline=False)
+        await interaction.message.edit(embed=embed, view=None)
+        await interaction.followup.send("Apelación aceptada.", ephemeral=True)
+
+
+class AppealDenyModal(discord.ui.Modal, title="Denegar Apelación"):
+    mod_reason = discord.ui.TextInput(
+        label="Mensaje para el usuario",
+        style=discord.TextStyle.paragraph,
+        placeholder="Ej: Tu apelación ha sido denegada porque...",
+        required=True
+    )
+
+    def __init__(self, bot: commands.Bot, appeal_id: int, user_id: int, action_type: str):
+        super().__init__()
+        self.bot = bot
+        self.appeal_id = appeal_id
+        self.user_id = user_id
+        self.action_type = action_type
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        db = getattr(self.bot, 'db')
+        db.update_appeal_status(self.appeal_id, "DENIED")
+        guild = interaction.guild
+        member = guild.get_member(self.user_id) or self.bot.get_user(self.user_id)
+        
+        if member:
+            embed = discord.Embed(
+                title="❌ Apelación Denegada",
+                description=f"Tu apelación en **{guild.name}** ha sido denegada.",
+                color=discord.Color.red()
+            )
+            embed.add_field(name="Sanción Original", value=self.action_type)
+            embed.add_field(name="Mensaje del Moderador", value=self.mod_reason.value, inline=False)
+            try:
+                await member.send(embed=embed)
+            except: pass
+        
+        embed = interaction.message.embeds[0]
+        embed.color = discord.Color.red()
+        embed.title = "❌ Apelación Denegada"
+        embed.add_field(name="Moderador", value=interaction.user.mention, inline=False)
+        embed.add_field(name="Motivo de Denegación", value=self.mod_reason.value, inline=False)
+        await interaction.message.edit(embed=embed, view=None)
+        await interaction.followup.send("Apelación denegada.", ephemeral=True)
+
+
+class AppealModView(discord.ui.View):
+    def __init__(self, bot: commands.Bot, appeal_id: int, user_id: int, action_type: str):
+        super().__init__(timeout=None)
+        self.bot = bot
+        self.appeal_id = appeal_id
+        self.user_id = user_id
+        self.action_type = action_type
+
+    @discord.ui.button(label="Aceptar", style=discord.ButtonStyle.success, emoji="✅")
+    async def accept_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(AppealAcceptModal(self.bot, self.appeal_id, self.user_id, self.action_type))
+
+    @discord.ui.button(label="Denegar", style=discord.ButtonStyle.danger, emoji="❌")
+    async def deny_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(AppealDenyModal(self.bot, self.appeal_id, self.user_id, self.action_type))
+
 
 
 async def setup(bot: commands.Bot):

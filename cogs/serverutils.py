@@ -157,6 +157,7 @@ class ServerUtils(commands.Cog):
             timestamp=datetime.now(timezone.utc),
         )
         embed.add_field(name="👮 Rol Staff (global)", value=role_or_none(srv.get("staff_role_id")), inline=True)
+        embed.add_field(name="🔨 Rol Moderador", value=role_or_none(srv.get("mod_role_id")), inline=True)
         embed.add_field(name="🎨 Rol Embeds", value=role_or_none(srv.get("embed_role_id")), inline=True)
         embed.add_field(name="📺 Rol Canales", value=role_or_none(srv.get("channels_role_id")), inline=True)
         embed.add_field(name="👥 Rol Usuarios", value=role_or_none(srv.get("users_role_id")), inline=True)
@@ -473,6 +474,10 @@ class GlobalConfigView(discord.ui.View):
     @discord.ui.button(label="Rol Staff", emoji="👮", style=discord.ButtonStyle.primary, row=0)
     async def staff_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.edit_message(view=RoleSelectView(self, "staff_role_id", "Rol Staff global"))
+
+    @discord.ui.button(label="Rol Moderador", emoji="🔨", style=discord.ButtonStyle.primary, row=0)
+    async def mod_role_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(view=RoleSelectView(self, "mod_role_id", "Rol Moderador"))
 
     @discord.ui.button(label="Rol Embeds", emoji="🎨", style=discord.ButtonStyle.primary, row=0)
     async def embed_btn(self, interaction: discord.Interaction, button: discord.ui.Button):

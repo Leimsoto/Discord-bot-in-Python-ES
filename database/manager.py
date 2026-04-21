@@ -43,9 +43,14 @@ VALID_CHANNEL_CONFIG_COLUMNS = frozenset({
 })
 
 VALID_SERVER_CONFIG_COLUMNS = frozenset({
-    "staff_role_id", "modlog_channel", "serverlog_channel", "log_events",
+    "staff_role_id", "mod_role_id", "modlog_channel", "serverlog_channel", "log_events",
     "embed_role_id", "channels_role_id", "users_role_id",
     "modlog_enabled", "serverlog_enabled",
+})
+
+VALID_AI_CONFIG_COLUMNS = frozenset({
+    "guild_id", "ai_channel_id", "ai_role_id", "ai_model", 
+    "ai_system_prompt", "ai_limit_requests", "ai_limit_hours",
 })
 
 
@@ -107,7 +112,29 @@ CREATE TABLE IF NOT EXISTS server_config (
     channels_role_id  INTEGER,
     users_role_id     INTEGER,
     modlog_enabled    INTEGER DEFAULT 1,
-    serverlog_enabled INTEGER DEFAULT 1
+    serverlog_enabled INTEGER DEFAULT 1,
+    mod_role_id       INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS ai_config (
+    guild_id          INTEGER PRIMARY KEY,
+    ai_channel_id     INTEGER,
+    ai_role_id        INTEGER,
+    ai_model          TEXT DEFAULT 'gemini-2.5-flash',
+    ai_system_prompt  TEXT,
+    ai_limit_requests INTEGER DEFAULT 50,
+    ai_limit_hours    INTEGER DEFAULT 12
+);
+
+CREATE TABLE IF NOT EXISTS appeals (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id     INTEGER NOT NULL,
+    user_id      INTEGER NOT NULL,
+    action_type  TEXT NOT NULL,
+    reason       TEXT,
+    appeal_text  TEXT,
+    status       TEXT DEFAULT 'PENDING',
+    created_at   TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS saved_embeds (
@@ -184,7 +211,29 @@ CREATE TABLE IF NOT EXISTS server_config (
     channels_role_id  BIGINT,
     users_role_id     BIGINT,
     modlog_enabled    SMALLINT DEFAULT 1,
-    serverlog_enabled SMALLINT DEFAULT 1
+    serverlog_enabled SMALLINT DEFAULT 1,
+    mod_role_id       BIGINT
+);
+
+CREATE TABLE IF NOT EXISTS ai_config (
+    guild_id          BIGINT PRIMARY KEY,
+    ai_channel_id     BIGINT,
+    ai_role_id        BIGINT,
+    ai_model          TEXT DEFAULT 'gemini-2.5-flash',
+    ai_system_prompt  TEXT,
+    ai_limit_requests INTEGER DEFAULT 50,
+    ai_limit_hours    INTEGER DEFAULT 12
+);
+
+CREATE TABLE IF NOT EXISTS appeals (
+    id           BIGSERIAL PRIMARY KEY,
+    guild_id     BIGINT NOT NULL,
+    user_id      BIGINT NOT NULL,
+    action_type  TEXT NOT NULL,
+    reason       TEXT,
+    appeal_text  TEXT,
+    status       TEXT DEFAULT 'PENDING',
+    created_at   TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS saved_embeds (
@@ -263,7 +312,30 @@ CREATE TABLE IF NOT EXISTS server_config (
     channels_role_id  BIGINT,
     users_role_id     BIGINT,
     modlog_enabled    TINYINT DEFAULT 1,
-    serverlog_enabled TINYINT DEFAULT 1
+    serverlog_enabled TINYINT DEFAULT 1,
+    mod_role_id       BIGINT
+) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS ai_config (
+    guild_id          BIGINT PRIMARY KEY,
+    ai_channel_id     BIGINT,
+    ai_role_id        BIGINT,
+    ai_model          VARCHAR(50) DEFAULT 'gemini-2.5-flash',
+    ai_system_prompt  TEXT,
+    ai_limit_requests INT DEFAULT 50,
+    ai_limit_hours    INT DEFAULT 12
+) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS appeals (
+    id           BIGINT NOT NULL AUTO_INCREMENT,
+    guild_id     BIGINT NOT NULL,
+    user_id      BIGINT NOT NULL,
+    action_type  VARCHAR(30) NOT NULL,
+    reason       TEXT,
+    appeal_text  TEXT,
+    status       VARCHAR(20) DEFAULT 'PENDING',
+    created_at   VARCHAR(50) NOT NULL,
+    PRIMARY KEY (id)
 ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS saved_embeds (
@@ -761,3 +833,76 @@ class DatabaseManager:
 
     def delete_saved_embed(self, embed_id: int) -> None:
         self._execute("DELETE FROM saved_embeds WHERE id = ?", (embed_id,))
+
+    # ── AI Config ─────────────────────────────────────────────────────────────
+
+    DEFAULT_AI_CONFIG: Dict[str, Any] = {
+        "guild_id": None,
+        "ai_channel_id": None,
+        "ai_role_id": None,
+        "ai_model": "gemini-2.5-flash",
+        "ai_system_prompt": None,
+        "ai_limit_requests": 50,
+        "ai_limit_hours": 12,
+    }
+
+    def get_ai_config(self, guild_id: int) -> Dict:
+        row = self._fetchone("SELECT * FROM ai_config WHERE guild_id = ?", (guild_id,))
+        result = dict(self.DEFAULT_AI_CONFIG)
+        result["guild_id"] = guild_id
+        if row:
+            result.update(row)
+        return result
+
+    def set_ai_config(self, guild_id: int, **kwargs) -> None:
+        invalid = set(kwargs) - VALID_AI_CONFIG_COLUMNS
+        if invalid:
+            raise ValueError(f"Columnas inválidas en ai_config: {invalid}")
+
+        ops = []
+        if self.db_type == "sqlite":
+            ops.append((
+                "INSERT OR IGNORE INTO ai_config (guild_id) VALUES (?)",
+                (guild_id,),
+            ))
+        elif self.db_type == "postgresql":
+            ops.append((
+                "INSERT INTO ai_config (guild_id) VALUES (?) ON CONFLICT (guild_id) DO NOTHING",
+                (guild_id,),
+            ))
+        else:
+            ops.append((
+                "INSERT IGNORE INTO ai_config (guild_id) VALUES (?)",
+                (guild_id,),
+            ))
+
+        for col, val in kwargs.items():
+            ops.append((
+                f"UPDATE ai_config SET {col} = ? WHERE guild_id = ?",
+                (val, guild_id),
+            ))
+
+        self._executemany(ops)
+
+    # ── Appeals ───────────────────────────────────────────────────────────────
+
+    def create_appeal(self, guild_id: int, user_id: int, action_type: str, reason: str, appeal_text: str) -> int:
+        """Crea una nueva apelación y retorna su ID (aproximado o ejecutado)."""
+        ops = [(
+            "INSERT INTO appeals (guild_id, user_id, action_type, reason, appeal_text, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (guild_id, user_id, action_type, reason, appeal_text, datetime.now(timezone.utc).isoformat())
+        )]
+        self._executemany(ops)
+        # Buscar el ID más reciente
+        row = self._fetchone(
+            "SELECT id FROM appeals WHERE guild_id = ? AND user_id = ? ORDER BY id DESC LIMIT 1",
+            (guild_id, user_id)
+        )
+        return row["id"] if row else 0
+
+    def get_appeal(self, appeal_id: int) -> Optional[Dict]:
+        return self._fetchone("SELECT * FROM appeals WHERE id = ?", (appeal_id,))
+
+    def update_appeal_status(self, appeal_id: int, status: str) -> None:
+        self._execute("UPDATE appeals SET status = ? WHERE id = ?", (status, appeal_id))
