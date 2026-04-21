@@ -49,8 +49,9 @@ VALID_SERVER_CONFIG_COLUMNS = frozenset({
 })
 
 VALID_AI_CONFIG_COLUMNS = frozenset({
-    "guild_id", "ai_channel_id", "ai_role_id", "ai_model", 
+    "guild_id", "ai_channel_id", "ai_role_id", "ai_model",
     "ai_system_prompt", "ai_limit_requests", "ai_limit_hours",
+    "ai_imagine_enabled",
 })
 
 
@@ -117,13 +118,14 @@ CREATE TABLE IF NOT EXISTS server_config (
 );
 
 CREATE TABLE IF NOT EXISTS ai_config (
-    guild_id          INTEGER PRIMARY KEY,
-    ai_channel_id     INTEGER,
-    ai_role_id        INTEGER,
-    ai_model          TEXT DEFAULT 'gemini-2.5-flash',
-    ai_system_prompt  TEXT,
-    ai_limit_requests INTEGER DEFAULT 50,
-    ai_limit_hours    INTEGER DEFAULT 12
+    guild_id            INTEGER PRIMARY KEY,
+    ai_channel_id       INTEGER,
+    ai_role_id          INTEGER,
+    ai_model            TEXT    DEFAULT 'gemini-2.5-flash-lite',
+    ai_system_prompt    TEXT,
+    ai_limit_requests   INTEGER DEFAULT 50,
+    ai_limit_hours      INTEGER DEFAULT 12,
+    ai_imagine_enabled  INTEGER DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS appeals (
@@ -322,13 +324,14 @@ CREATE TABLE IF NOT EXISTS server_config (
 );
 
 CREATE TABLE IF NOT EXISTS ai_config (
-    guild_id          BIGINT PRIMARY KEY,
-    ai_channel_id     BIGINT,
-    ai_role_id        BIGINT,
-    ai_model          TEXT DEFAULT 'gemini-2.5-flash',
-    ai_system_prompt  TEXT,
-    ai_limit_requests INTEGER DEFAULT 50,
-    ai_limit_hours    INTEGER DEFAULT 12
+    guild_id            BIGINT  PRIMARY KEY,
+    ai_channel_id       BIGINT,
+    ai_role_id          BIGINT,
+    ai_model            TEXT    DEFAULT 'gemini-2.5-flash-lite',
+    ai_system_prompt    TEXT,
+    ai_limit_requests   INTEGER DEFAULT 50,
+    ai_limit_hours      INTEGER DEFAULT 12,
+    ai_imagine_enabled  SMALLINT DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS appeals (
@@ -529,13 +532,14 @@ CREATE TABLE IF NOT EXISTS server_config (
 ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS ai_config (
-    guild_id          BIGINT PRIMARY KEY,
-    ai_channel_id     BIGINT,
-    ai_role_id        BIGINT,
-    ai_model          VARCHAR(50) DEFAULT 'gemini-2.5-flash',
-    ai_system_prompt  TEXT,
-    ai_limit_requests INT DEFAULT 50,
-    ai_limit_hours    INT DEFAULT 12
+    guild_id            BIGINT      PRIMARY KEY,
+    ai_channel_id       BIGINT,
+    ai_role_id          BIGINT,
+    ai_model            VARCHAR(60) DEFAULT 'gemini-2.5-flash-lite',
+    ai_system_prompt    TEXT,
+    ai_limit_requests   INT         DEFAULT 50,
+    ai_limit_hours      INT         DEFAULT 12,
+    ai_imagine_enabled  TINYINT     DEFAULT 1
 ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS appeals (
@@ -868,6 +872,33 @@ class DatabaseManager:
                         cur.execute(stmt)
 
         logger.info("Schema de base de datos inicializado correctamente.")
+        self._migrate_ai_config()
+
+    def _migrate_ai_config(self) -> None:
+        """
+        Migración no destructiva de ai_config.
+        Añade columnas nuevas a bases de datos existentes sin perder datos.
+        Seguro de ejecutar múltiples veces (ignora si la columna ya existe).
+        """
+        migrations = [
+            ("ai_imagine_enabled", "INTEGER DEFAULT 1"),   # SQLite / genérico
+        ]
+        for col, col_def in migrations:
+            try:
+                if self.db_type == "mariadb":
+                    # MariaDB: verificar antes de alterar
+                    exists = self._fetchone(
+                        "SELECT COUNT(*) as c FROM information_schema.COLUMNS "
+                        "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'ai_config' "
+                        "AND COLUMN_NAME = ?",
+                        (col,),
+                    )
+                    if exists and exists.get("c", 0):
+                        continue
+                self._execute(f"ALTER TABLE ai_config ADD COLUMN {col} {col_def}", ())
+                logger.info(f"Migración ai_config: columna '{col}' añadida.")
+            except Exception:
+                pass  # Columna ya existe o error ignorable
 
     # ── Guild Config ──────────────────────────────────────────────────────────
 
@@ -1158,13 +1189,14 @@ class DatabaseManager:
     # ── AI Config ─────────────────────────────────────────────────────────────
 
     DEFAULT_AI_CONFIG: Dict[str, Any] = {
-        "guild_id": None,
-        "ai_channel_id": None,
-        "ai_role_id": None,
-        "ai_model": "gemini-2.5-flash",
-        "ai_system_prompt": None,
-        "ai_limit_requests": 50,
-        "ai_limit_hours": 12,
+        "guild_id":           None,
+        "ai_channel_id":      None,
+        "ai_role_id":         None,
+        "ai_model":           "gemini-2.5-flash-lite",   # free-tier: 15 RPM / 1000 RPD
+        "ai_system_prompt":   None,
+        "ai_limit_requests":  50,
+        "ai_limit_hours":     12,
+        "ai_imagine_enabled": 1,
     }
 
     def get_ai_config(self, guild_id: int) -> Dict:

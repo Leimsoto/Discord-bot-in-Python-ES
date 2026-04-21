@@ -1,63 +1,186 @@
-import os
-import logging
+"""
+cogs/ia.py — Módulo de IA para TortuguBot
+──────────────────────────────────────────
+• Chat con historial por usuario/guild    (Gemini 2.5 Flash-Lite → Flash → Pro)
+• Lectura multimodal en adjuntos          (imágenes, PDFs, audio, vídeo)
+• Generación de imágenes /imagine         (Imagen 3.0)
+• System prompt por guild configurable    (DB o .env como fallback)
+• Rate limiting correcto: 1 slot/REQUEST  (no tokens LLM)
+• Workers con cog_load/cog_unload limpio  (sin task leaks)
+• Backoff exponencial + fallback 3 modelos
+• Métricas en memoria + /ai_status
+
+Cadena de modelos free tier (abril 2026):
+  Primario  → gemini-2.5-flash-lite  (15 RPM / 1 000 RPD)
+  Secundario → gemini-2.5-flash      (10 RPM /   250 RPD)
+  Último recurso → gemini-2.5-pro    ( 5 RPM /   100 RPD)
+
+Variables de entorno:
+  GEMINI_API_KEY          — requerida
+  AI_SYSTEM_PROMPT        — prompt base global (guild puede sobreescribir vía DB)
+  AI_RATE_CAPACITY        — requests por periodo (default 10)
+  AI_RATE_PERIOD          — periodo en segundos  (default 60)
+  AI_CONCURRENCY          — llamadas paralelas    (default 2)
+  AI_QUEUE_SIZE           — tamaño máx de cola    (default 64)
+  AI_MIN_USER_INTERVAL    — cooldown por usuario  (default 4.0 s)
+"""
+
 import asyncio
-import time
+import io
+import logging
+import os
 import random
 import re
 from time import monotonic
-from datetime import datetime, timezone
-from typing import Optional, List, Dict
+from typing import Dict, List, Optional, Tuple
 
+import aiohttp
 import discord
-from discord.ext import commands
 from discord import app_commands
+from discord.ext import commands
 
 try:
     from google import genai
-    from google.genai import types
     from google.genai import errors as genai_errors
+    from google.genai import types
 except ImportError:
     genai = None
-    types = None
     genai_errors = None
+    types = None
 
 logger = logging.getLogger(__name__)
 
-class IAConfigView(discord.ui.View):
-    def __init__(self, cog, guild_id: int):
-        super().__init__(timeout=120)
-        self.cog = cog
+# ── Modelos (cadena free-tier óptima) ────────────────────────────────────────
+# Orden: velocidad/cuota → calidad
+CHAT_MODELS = [
+    "gemini-2.5-flash-lite",   # primario  – 15 RPM, 1 000 RPD
+    "gemini-2.5-flash",        # secundario – 10 RPM,   250 RPD
+    "gemini-2.5-pro",          # último recurso – 5 RPM, 100 RPD
+]
+IMAGEN_MODEL = "imagen-3.0-generate-008"
+
+# Etiquetas legibles para la UI
+_MODEL_LABELS = {
+    "gemini-2.5-flash-lite": "Flash-Lite ⚡ (rápido)",
+    "gemini-2.5-flash":      "Flash 🔥 (equilibrado)",
+    "gemini-2.5-pro":        "Pro 🧠 (potente)",
+}
+
+# ── MIME types aceptados como adjunto ────────────────────────────────────────
+_MIME_IMAGE = {"image/jpeg", "image/png", "image/gif", "image/webp"}
+_MIME_DOC   = {"application/pdf"}
+_MIME_AUDIO = {"audio/mpeg", "audio/mp3", "audio/wav", "audio/ogg",
+               "audio/flac", "audio/x-flac"}
+_MIME_VIDEO = {"video/mp4", "video/mpeg", "video/mov",
+               "video/quicktime", "video/avi", "video/webm"}
+_MIME_ALL   = _MIME_IMAGE | _MIME_DOC | _MIME_AUDIO | _MIME_VIDEO
+
+_EXT_MIME: Dict[str, str] = {
+    ".jpg":  "image/jpeg",    ".jpeg": "image/jpeg",
+    ".png":  "image/png",     ".gif":  "image/gif",
+    ".webp": "image/webp",    ".pdf":  "application/pdf",
+    ".mp3":  "audio/mpeg",    ".wav":  "audio/wav",
+    ".ogg":  "audio/ogg",     ".flac": "audio/flac",
+    ".mp4":  "video/mp4",     ".mov":  "video/quicktime",
+    ".avi":  "video/avi",     ".webm": "video/webm",
+}
+
+_HISTORY_MAX   = 20    # turnos (user + model) a conservar por usuario
+_DISCORD_MAX   = 1990  # margen bajo el límite de 2000 chars de Discord
+_MAX_ATTACH_MB = 20    # MB máximos por adjunto
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Modal para editar el system prompt por guild
+# ─────────────────────────────────────────────────────────────────────────────
+class SystemPromptModal(discord.ui.Modal, title="System Prompt de IA"):
+    prompt = discord.ui.TextInput(
+        label="Prompt del sistema",
+        style=discord.TextStyle.long,
+        placeholder="Eres un asistente llamado TortuguBot...",
+        max_length=2000,
+        required=False,
+    )
+
+    def __init__(self, cog: "IA", guild_id: int, current: str):
+        super().__init__()
+        self.cog      = cog
         self.guild_id = guild_id
-        
-        cfg = self.cog.db.get_ai_config(self.guild_id)
-        current_model = cfg.get("ai_model", "gemini-2.5-flash")
-        
-        # Botones UI
-        self.model_btn = discord.ui.Button(
-            label=f"Modelo: {current_model}", 
-            style=discord.ButtonStyle.primary,
-            emoji="🤖"
+        self.prompt.default = current or ""
+
+    async def on_submit(self, interaction: discord.Interaction):
+        value = self.prompt.value.strip() or None
+        self.cog.db.set_ai_config(self.guild_id, ai_system_prompt=value)
+        label = f"`{value[:60]}…`" if value and len(value) > 60 else (f"`{value}`" if value else "_(usando .env global)_")
+        await interaction.response.send_message(
+            f"✅ System prompt actualizado: {label}", ephemeral=True
         )
-        self.model_btn.callback = self.toggle_model
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  UI de configuración del cog
+# ─────────────────────────────────────────────────────────────────────────────
+class IAConfigView(discord.ui.View):
+    def __init__(self, cog: "IA", guild_id: int):
+        super().__init__(timeout=180)
+        self.cog      = cog
+        self.guild_id = guild_id
+
+        cfg     = self.cog.db.get_ai_config(guild_id)
+        current = cfg.get("ai_model", CHAT_MODELS[0])
+        label   = _MODEL_LABELS.get(current, current)
+
+        # Botón dinámico de modelo (cicla entre los 3)
+        self.model_btn = discord.ui.Button(
+            label=f"Modelo: {label}",
+            style=discord.ButtonStyle.primary,
+            emoji="🤖",
+            row=0,
+        )
+        self.model_btn.callback = self.cycle_model
         self.add_item(self.model_btn)
 
-    async def toggle_model(self, interaction: discord.Interaction):
-        cfg = self.cog.db.get_ai_config(self.guild_id)
-        current = cfg.get("ai_model", "gemini-2.5-flash")
-        new_model = "gemini-2.5-pro" if "flash" in current.lower() else "gemini-2.5-flash"
-        self.cog.db.set_ai_config(self.guild_id, ai_model=new_model)
-        self.model_btn.label = f"Modelo: {new_model}"
+        # Botón toggle /imagine
+        imagine_on = bool(cfg.get("ai_imagine_enabled", 1))
+        self.imagine_btn = discord.ui.Button(
+            label="Imagen Gen: ✅ ON" if imagine_on else "Imagen Gen: ❌ OFF",
+            style=discord.ButtonStyle.success if imagine_on else discord.ButtonStyle.danger,
+            emoji="🖼️",
+            row=0,
+        )
+        self.imagine_btn.callback = self.toggle_imagine
+        self.add_item(self.imagine_btn)
+
+    async def cycle_model(self, interaction: discord.Interaction):
+        cfg     = self.cog.db.get_ai_config(self.guild_id)
+        current = cfg.get("ai_model", CHAT_MODELS[0])
+        idx     = CHAT_MODELS.index(current) if current in CHAT_MODELS else 0
+        new     = CHAT_MODELS[(idx + 1) % len(CHAT_MODELS)]
+        self.cog.db.set_ai_config(self.guild_id, ai_model=new)
+        self.model_btn.label = f"Modelo: {_MODEL_LABELS.get(new, new)}"
         embed = self.cog._build_ia_embed(interaction.guild, self.cog.db.get_ai_config(self.guild_id))
         await interaction.response.edit_message(embed=embed, view=self)
 
-    @discord.ui.button(label="Canal Chat", style=discord.ButtonStyle.secondary, emoji="💬")
+    async def toggle_imagine(self, interaction: discord.Interaction):
+        cfg     = self.cog.db.get_ai_config(self.guild_id)
+        current = bool(cfg.get("ai_imagine_enabled", 1))
+        new_val = 0 if current else 1
+        self.cog.db.set_ai_config(self.guild_id, ai_imagine_enabled=new_val)
+        self.imagine_btn.label  = "Imagen Gen: ✅ ON" if new_val else "Imagen Gen: ❌ OFF"
+        self.imagine_btn.style  = discord.ButtonStyle.success if new_val else discord.ButtonStyle.danger
+        embed = self.cog._build_ia_embed(interaction.guild, self.cog.db.get_ai_config(self.guild_id))
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="Canal Chat", style=discord.ButtonStyle.secondary, emoji="💬", row=1)
     async def chat_channel_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message("Menciona el nuevo canal de chat de IA (ej: #chat-ai):", ephemeral=True)
+        await interaction.response.send_message(
+            "Menciona el canal de chat de IA (ej: #chat-ai):", ephemeral=True
+        )
         try:
             msg = await self.cog.bot.wait_for(
                 "message",
                 check=lambda m: m.author == interaction.user and m.channel == interaction.channel,
-                timeout=60.0
+                timeout=60.0,
             )
             if msg.channel_mentions:
                 self.cog.db.set_ai_config(self.guild_id, ai_channel_id=msg.channel_mentions[0].id)
@@ -67,14 +190,16 @@ class IAConfigView(discord.ui.View):
         except asyncio.TimeoutError:
             pass
 
-    @discord.ui.button(label="Rol Ping AI", style=discord.ButtonStyle.secondary, emoji="👥")
+    @discord.ui.button(label="Rol Ping", style=discord.ButtonStyle.secondary, emoji="👥", row=1)
     async def role_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message("Menciona el rol permitido para usar @Bot (ej: @Premium):", ephemeral=True)
+        await interaction.response.send_message(
+            "Menciona el rol permitido para usar @Bot (ej: @Premium):", ephemeral=True
+        )
         try:
             msg = await self.cog.bot.wait_for(
                 "message",
                 check=lambda m: m.author == interaction.user and m.channel == interaction.channel,
-                timeout=60.0
+                timeout=60.0,
             )
             if msg.role_mentions:
                 self.cog.db.set_ai_config(self.guild_id, ai_role_id=msg.role_mentions[0].id)
@@ -84,502 +209,441 @@ class IAConfigView(discord.ui.View):
         except asyncio.TimeoutError:
             pass
 
+    @discord.ui.button(label="System Prompt", style=discord.ButtonStyle.secondary, emoji="📝", row=1)
+    async def prompt_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        cfg     = self.cog.db.get_ai_config(self.guild_id)
+        current = cfg.get("ai_system_prompt") or ""
+        await interaction.response.send_modal(
+            SystemPromptModal(self.cog, self.guild_id, current)
+        )
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Cog principal
+# ─────────────────────────────────────────────────────────────────────────────
 class IA(commands.Cog):
-    """Módulo de Inteligencia Artificial (Google Gemini)"""
+    """Módulo de Inteligencia Artificial – Gemini multimodal + Imagen 3"""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.db = bot.db # type: ignore
-        self.server_contexts = {} # guild_id -> str
-        self.chat_histories = {} # guild_id_user_id -> List[Content]
+        self.db  = bot.db  # type: ignore
+
+        self._server_contexts: Dict[int, str]  = {}   # guild_id → contexto sincronizado
+        self._chat_histories:  Dict[str, List] = {}   # "guild_user" → List[Content]
 
         api_key = os.getenv("GEMINI_API_KEY")
         if not api_key or not genai:
-            logger.warning("No se encontró GEMINI_API_KEY o google-genai no está instalado.")
+            logger.warning("GEMINI_API_KEY no encontrada o google-genai no instalado.")
             self.client = None
         else:
             self.client = genai.Client(api_key=api_key)
 
-        # Rate limiting / concurrency controls
-        # Tokens per period (capacity) and period in seconds
-        self._rate_capacity = int(os.getenv("AI_RATE_CAPACITY", "12"))
+        # ── Rate limiting: TOKEN BUCKET = 1 slot por REQUEST ─────────────────
+        # (No tokens del LLM — eso causaba el bug de "excede")
+        self._rate_cap    = int(os.getenv("AI_RATE_CAPACITY", "10"))
         self._rate_period = float(os.getenv("AI_RATE_PERIOD", "60"))
-        self._rate_tokens = float(self._rate_capacity)
-        self._rate_last = monotonic()
-        self._rate_lock = asyncio.Lock()
+        self._rate_tokens = float(self._rate_cap)
+        self._rate_last   = monotonic()
+        self._rate_lock   = asyncio.Lock()
 
-        # Number of concurrent requests allowed to the API
-        self._ai_concurrency = int(os.getenv("AI_CONCURRENCY", "2"))
-        self._ai_semaphore = asyncio.Semaphore(self._ai_concurrency)
+        # ── Concurrencia / cola ───────────────────────────────────────────────
+        self._concurrency = int(os.getenv("AI_CONCURRENCY", "2"))
+        self._semaphore   = asyncio.Semaphore(self._concurrency)
+        self._queue: asyncio.Queue = asyncio.Queue(
+            maxsize=int(os.getenv("AI_QUEUE_SIZE", "64"))
+        )
+        self._workers: List[asyncio.Task] = []
 
-        # Queue + workers to smooth bursts
-        self._ai_queue = asyncio.Queue(maxsize=int(os.getenv("AI_QUEUE_SIZE", "64")))
-        self._worker_tasks: List[asyncio.Task] = []
-        for i in range(self._ai_concurrency):
-            task = self.bot.loop.create_task(self._ai_worker(i))
-            self._worker_tasks.append(task)
+        # ── Per-user cooldown ─────────────────────────────────────────────────
+        self._last_req:      Dict[int, float] = {}
+        self._user_interval: float = float(os.getenv("AI_MIN_USER_INTERVAL", "4.0"))
 
-        # Per-user cooldown to avoid floods
-        self._last_request: Dict[int, float] = {}
-        self._min_user_interval = float(os.getenv("AI_MIN_USER_INTERVAL", "3.0"))
+        # ── Backoff por modelo ────────────────────────────────────────────────
+        self._model_backoff:  Dict[str, float] = {}
+        self._global_backoff: float = 0.0
 
-        # Per-model backoff (model -> monotonic timestamp until which model is paused)
-        self._model_backoff_until: Dict[str, float] = {}
-        self._global_backoff_until: float = 0.0
-
-        # Token estimation: approximate number of characters per token
-        self._chars_per_token = int(os.getenv("AI_CHARS_PER_TOKEN", "4"))
-
-        # Metrics (in-memory)
-        self._metrics = {
-            'requests': 0,
-            'success': 0,
-            'retries': 0,
-            'errors_429': 0,
-            'errors_503': 0,
-            'fallbacks': 0,
-            'queue_max': 0,
-            'total_latency': 0.0,
-            'latency_count': 0,
-            'total_tokens': 0,
+        # ── Métricas ──────────────────────────────────────────────────────────
+        self._metrics: Dict[str, float] = {
+            "requests": 0, "success": 0, "retries": 0,
+            "errors_429": 0, "errors_503": 0, "fallbacks": 0,
+            "images_gen": 0, "multimodal": 0,
+            "queue_max": 0, "total_latency": 0.0, "latency_count": 0,
         }
 
-    def _inc_metric(self, name: str, value: int = 1) -> None:
-        try:
-            if name in self._metrics:
-                self._metrics[name] += value
-        except Exception:
-            pass
+        self._http: Optional[aiohttp.ClientSession] = None
 
-    def _record_latency(self, seconds: float) -> None:
-        try:
-            self._metrics['total_latency'] += seconds
-            self._metrics['latency_count'] += 1
-        except Exception:
-            pass
+    # ── Lifecycle ─────────────────────────────────────────────────────────────
+
+    async def cog_load(self):
+        self._http = aiohttp.ClientSession()
+        for i in range(self._concurrency):
+            task = asyncio.create_task(
+                self._worker_loop(i), name=f"ia_worker_{i}"
+            )
+            self._workers.append(task)
+        logger.info(f"IA cog cargado – {self._concurrency} workers. "
+                    f"Modelo primario: {CHAT_MODELS[0]}")
+
+    async def cog_unload(self):
+        for task in self._workers:
+            task.cancel()
+        await asyncio.gather(*self._workers, return_exceptions=True)
+        self._workers.clear()
+        if self._http and not self._http.closed:
+            await self._http.close()
+        logger.info("IA cog descargado limpiamente.")
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
+
+    def _inc(self, key: str, v: float = 1.0) -> None:
+        self._metrics[key] = self._metrics.get(key, 0.0) + v
 
     def _build_ia_embed(self, guild: discord.Guild, cfg: dict) -> discord.Embed:
         embed = discord.Embed(
             title="🧠 Configuración de Inteligencia Artificial",
             description="Controla cómo interactúa el bot con Gemini API.",
-            color=discord.Color.purple()
+            color=discord.Color.purple(),
         )
-        
         ch_id = cfg.get("ai_channel_id")
-        ch_str = f"<#{ch_id}>" if ch_id else "❌ No configurado"
-        embed.add_field(name="💬 Canal Chat Único", value=ch_str, inline=True)
-        
+        embed.add_field(
+            name="💬 Canal Chat",
+            value=f"<#{ch_id}>" if ch_id else "❌ No configurado",
+            inline=True,
+        )
         r_id = cfg.get("ai_role_id")
-        r_str = f"<@&{r_id}>" if r_id else "❌ No configurado"
-        embed.add_field(name="👥 Rol Ping Permitido", value=r_str, inline=True)
-        
-        embed.add_field(name="🤖 Modelo Activo", value=f"`{cfg.get('ai_model', 'gemini-2.5-flash')}`", inline=True)
+        embed.add_field(
+            name="👥 Rol Ping",
+            value=f"<@&{r_id}>" if r_id else "❌ No configurado",
+            inline=True,
+        )
+        model = cfg.get("ai_model", CHAT_MODELS[0])
+        embed.add_field(
+            name="🤖 Modelo primario",
+            value=f"`{model}`\n_{_MODEL_LABELS.get(model, '')}_",
+            inline=True,
+        )
+        imagine_on = bool(cfg.get("ai_imagine_enabled", 1))
+        embed.add_field(
+            name="🖼️ /imagine",
+            value="✅ Activado" if imagine_on else "❌ Desactivado",
+            inline=True,
+        )
+        embed.add_field(
+            name="🔗 Cadena de fallback",
+            value=" → ".join(f"`{m}`" for m in CHAT_MODELS),
+            inline=False,
+        )
+        sys_prompt = cfg.get("ai_system_prompt")
+        embed.add_field(
+            name="📝 System Prompt",
+            value=(f"_{sys_prompt[:80]}…_" if sys_prompt and len(sys_prompt) > 80
+                   else (f"_{sys_prompt}_" if sys_prompt else "_Global (.env)_")),
+            inline=False,
+        )
+        embed.set_footer(text=f"Imagen Gen: {IMAGEN_MODEL}  •  Multimedia: img/pdf/audio/video")
         return embed
 
-    @app_commands.command(name="iaconfig", description="Configura el módulo de Inteligencia Artificial")
-    @app_commands.checks.has_permissions(administrator=True)
-    async def iaconfig(self, interaction: discord.Interaction):
-        if not self.client:
-            return await interaction.response.send_message("❌ La API de Gemini no está configurada (.env).", ephemeral=True)
-            
-        cfg = self.db.get_ai_config(interaction.guild_id)
-        embed = self._build_ia_embed(interaction.guild, cfg)
-        view = IAConfigView(self, interaction.guild_id)
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
-
-    @app_commands.command(name="iasync", description="Sincroniza y comprime la información del servidor para darle contexto a la IA")
-    @app_commands.checks.has_permissions(administrator=True)
-    async def iasync(self, interaction: discord.Interaction):
-        if not self.client:
-            return await interaction.response.send_message("❌ La API de Gemini no está configurada.", ephemeral=True)
-            
-        await interaction.response.defer(ephemeral=True)
-        guild = interaction.guild
-        
-        context_parts = [f"Información del servidor: {guild.name}"]
-        context_parts.append(f"Descripción: {guild.description or 'Ninguna'}")
-        context_parts.append(f"Cantidad de miembros: {guild.member_count}")
-        
-        # Recopilar canales
-        context_parts.append("\n--- Canales ---")
-        for channel in guild.text_channels[:20]: # Límite para no exceder si hay muchísimos
-            topic = f" - Tema: {channel.topic}" if channel.topic else ""
-            context_parts.append(f"#{channel.name}{topic}")
-            
-        # Recopilar roles
-        context_parts.append("\n--- Roles Principales ---")
-        for role in reversed(guild.roles[1:15]): # Ignorar @everyone y limite a los top roles
-            context_parts.append(f"- {role.name}")
-
-        self.server_contexts[guild.id] = "\n".join(context_parts)
-        await interaction.followup.send("✅ Contexto del servidor sincronizado y cargado en memoria para la IA.")
-
-    @app_commands.command(name="ai_status", description="Muestra métricas y estado del servicio IA")
-    @app_commands.checks.has_permissions(administrator=True)
-    async def ai_status(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-
-        qsize = self._ai_queue.qsize() if hasattr(self, '_ai_queue') else 0
-        avg_latency = 0.0
-        if self._metrics.get('latency_count', 0) > 0:
-            avg_latency = self._metrics['total_latency'] / max(1, self._metrics['latency_count'])
-
-        embed = discord.Embed(title="📊 Estado IA", color=discord.Color.blue())
-        embed.add_field(name="Requests en cola", value=f"{qsize}", inline=True)
-        embed.add_field(name="Máx cola registrada", value=f"{self._metrics.get('queue_max', 0)}", inline=True)
-        embed.add_field(name="Requests totales", value=f"{self._metrics.get('requests', 0)}", inline=True)
-        embed.add_field(name="Respuestas OK", value=f"{self._metrics.get('success', 0)}", inline=True)
-        embed.add_field(name="Reintentos", value=f"{self._metrics.get('retries', 0)}", inline=True)
-        embed.add_field(name="Fallbacks usados", value=f"{self._metrics.get('fallbacks', 0)}", inline=True)
-        embed.add_field(name="Errores 429", value=f"{self._metrics.get('errors_429', 0)}", inline=True)
-        embed.add_field(name="Errores 503", value=f"{self._metrics.get('errors_503', 0)}", inline=True)
-        embed.add_field(name="Tokens totales estimados", value=f"{self._metrics.get('total_tokens', 0)}", inline=True)
-        embed.add_field(name="Latency avg (s)", value=f"{avg_latency:.2f}", inline=True)
-        embed.add_field(name="Concurrency", value=f"{self._ai_concurrency}", inline=True)
-        embed.add_field(name="Rate (cap/period)", value=f"{self._rate_capacity}/{self._rate_period}s", inline=True)
-
-        # Backoff info
-        backoff_text = []
-        now = monotonic()
-        for model, until in self._model_backoff_until.items():
-            if until > now:
-                backoff_text.append(f"{model}: {int(until-now)}s")
-        if self._global_backoff_until and self._global_backoff_until > now:
-            backoff_text.append(f"GLOBAL: {int(self._global_backoff_until-now)}s")
-
-        embed.add_field(name="Model Backoffs", value=("\n".join(backoff_text) if backoff_text else "None"), inline=False)
-
-        await interaction.followup.send(embed=embed, ephemeral=True)
-
     def _get_system_prompt(self, guild_id: int) -> str:
-        base_prompt = os.getenv("AI_SYSTEM_PROMPT", "Eres un asistente amigable y útil llamado TortuguBot. Si te hacen preguntas de actualidad, usa Google Search para responder.")
-        srv_ctx = self.server_contexts.get(guild_id, "")
-        if srv_ctx:
-            base_prompt += f"\n\nContexto actual del servidor donde te encuentras:\n{srv_ctx}"
-        return base_prompt
+        """
+        Prioridad: 1) prompt por guild (DB)  2) .env  3) default hardcoded
+        """
+        cfg        = self.db.get_ai_config(guild_id)
+        guild_prompt = cfg.get("ai_system_prompt")
+        if guild_prompt and guild_prompt.strip():
+            base = guild_prompt.strip()
+        else:
+            base = os.getenv(
+                "AI_SYSTEM_PROMPT",
+                "Eres un asistente amigable y útil llamado TortuguBot. "
+                "Puedes analizar imágenes, documentos PDF, audio y vídeo que te compartan. "
+                "Si necesitas información actual usa Google Search.",
+            )
+        ctx = self._server_contexts.get(guild_id)
+        if ctx:
+            base += f"\n\nContexto del servidor:\n{ctx}"
+        return base
 
-    async def _generate_content_with_retries(
+    # ── Rate limiter (1 slot por request) ─────────────────────────────────────
+
+    async def _acquire_slot(self, max_wait: float = 30.0) -> bool:
+        start = monotonic()
+        while True:
+            async with self._rate_lock:
+                now     = monotonic()
+                elapsed = now - self._rate_last
+                refill  = (elapsed / self._rate_period) * self._rate_cap
+                self._rate_tokens = min(float(self._rate_cap), self._rate_tokens + refill)
+                self._rate_last   = now
+                if self._rate_tokens >= 1.0:
+                    self._rate_tokens -= 1.0
+                    return True
+            if monotonic() - start > max_wait:
+                return False
+            await asyncio.sleep(0.5)
+
+    # ── Descarga de adjuntos ──────────────────────────────────────────────────
+
+    async def _fetch_attachment(
+        self, attachment: discord.Attachment
+    ) -> Optional[Tuple[bytes, str]]:
+        mime = (attachment.content_type or "").split(";")[0].strip().lower()
+        if not mime or mime in ("application/octet-stream", "binary/octet-stream"):
+            ext  = os.path.splitext(attachment.filename)[1].lower()
+            mime = _EXT_MIME.get(ext, "")
+        if mime not in _MIME_ALL:
+            return None
+        if attachment.size > _MAX_ATTACH_MB * 1024 * 1024:
+            logger.warning(f"Adjunto omitido (>20 MB): {attachment.filename}")
+            return None
+        try:
+            async with self._http.get(
+                attachment.url,
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as r:
+                if r.status != 200:
+                    return None
+                data = await r.read()
+            return data, mime
+        except Exception as e:
+            logger.warning(f"No se pudo descargar adjunto '{attachment.filename}': {e}")
+            return None
+
+    # ── Construcción de partes Gemini ─────────────────────────────────────────
+
+    async def _build_user_parts(
+        self, message: discord.Message, user_text: str
+    ) -> list:
+        """
+        Construye parts para el turno usuario: texto + adjuntos resueltos.
+        Los adjuntos se descargan ANTES de encolar para evitar races.
+        """
+        parts = []
+        if user_text:
+            parts.append(types.Part.from_text(text=user_text))
+
+        for att in message.attachments:
+            result = await self._fetch_attachment(att)
+            if result:
+                data, mime = result
+                parts.append(types.Part.from_bytes(data=data, mime_type=mime))
+                self._inc("multimodal")
+            else:
+                parts.append(types.Part.from_text(
+                    text=f"[Adjunto no procesable: {att.filename}]"
+                ))
+
+        if not parts:
+            parts.append(types.Part.from_text(text="[Mensaje sin contenido]"))
+        return parts
+
+    # ── Generación con reintentos y fallback ──────────────────────────────────
+
+    async def _generate_with_retries(
         self,
-        model,
-        contents,
+        model: str,
+        contents: list,
         config,
         retries: int = 3,
-        initial_backoff: float = 1.0,
+        backoff_base: float = 1.5,
         fallback_models: Optional[List[str]] = None,
     ):
-        """Intentar generar contenido con reintentos exponenciales y modelos de fallback.
-
-        Ejecuta la llamada bloqueante en un hilo (`asyncio.to_thread`) para no
-        bloquear el loop de eventos.
         """
-        if fallback_models is None:
-            fallback_models = []
-
+        Llama a Gemini con reintentos exponenciales por modelo.
+        429 → marca modelo en backoff y salta al siguiente INMEDIATAMENTE.
+        503 → reintenta el mismo modelo con backoff.
+        """
+        fallback_models = fallback_models or []
         last_exc: Optional[BaseException] = None
 
-        def _parse_retry_delay_from_error(err) -> Optional[float]:
-            # Try to extract RetryInfo.retryDelay (seconds) from error details
+        def _extract_retry_delay(err) -> Optional[float]:
             try:
-                details = getattr(err, 'details', None)
-                if not details:
-                    return None
-
-                def _walk(d):
-                    if isinstance(d, dict):
-                        # direct 'retryDelay' or nested 'error'->'details'
-                        if 'retryDelay' in d:
-                            val = d.get('retryDelay')
-                            if isinstance(val, str) and val.endswith('s'):
-                                try:
-                                    return float(val[:-1])
-                                except Exception:
-                                    return None
-                            try:
-                                return float(val)
-                            except Exception:
-                                return None
-                        if 'details' in d:
-                            return _walk(d['details'])
-                        if 'error' in d:
-                            return _walk(d['error'].get('details', d['error']))
-                    if isinstance(d, list):
-                        for it in d:
-                            if isinstance(it, dict):
-                                t = it.get('@type', '')
-                                if 'RetryInfo' in t or 'retryinfo' in t.lower():
-                                    rd = it.get('retryDelay')
-                                    if isinstance(rd, str) and rd.endswith('s'):
-                                        try:
-                                            return float(rd[:-1])
-                                        except Exception:
-                                            continue
-                                    if isinstance(rd, dict) and 'seconds' in rd:
-                                        try:
-                                            return float(rd.get('seconds', 0))
-                                        except Exception:
-                                            continue
-                                # fallback inspect nested
-                                sub = _walk(it.get('details', it))
-                                if sub:
-                                    return sub
-                    return None
-
-                return _walk(details)
+                msg = str(err)
+                m = re.search(r'retry[\s_-](?:in|after)[:\s]+(\d+\.?\d*)\s*s', msg, re.I)
+                if m:
+                    return float(m.group(1))
+                m2 = re.search(r'"retryDelay":\s*"(\d+\.?\d*)s"',
+                               str(getattr(err, "details", "")))
+                if m2:
+                    return float(m2.group(1))
             except Exception:
-                return None
+                pass
+            return None
 
-        async def _acquire_tokens(tokens_needed: int, max_wait: float = 30.0) -> bool:
-            start = monotonic()
-            while True:
-                async with self._rate_lock:
-                    now = monotonic()
-                    elapsed = now - self._rate_last
-                    if elapsed > 0:
-                        refill = (elapsed / self._rate_period) * self._rate_capacity
-                        if refill > 0:
-                            self._rate_tokens = min(self._rate_capacity, self._rate_tokens + refill)
-                            self._rate_last = now
-                    if self._rate_tokens >= tokens_needed:
-                        self._rate_tokens -= tokens_needed
-                        return True
-                await asyncio.sleep(0.5)
-                if monotonic() - start > max_wait:
-                    return False
+        models_to_try = [model] + [m for m in (fallback_models or []) if m != model]
 
-        # Try to perform the call with concurrency control and rate limiting
-        for attempt in range(1, retries + 1):
-            # Estimar tokens necesarios según el contenido
-            try:
-                tokens_needed = self._estimate_input_tokens(contents)
-            except Exception:
-                tokens_needed = 1
+        for current_model in models_to_try:
+            # Respetar backoff del modelo
+            if self._model_backoff.get(current_model, 0.0) > monotonic():
+                remain = int(self._model_backoff[current_model] - monotonic())
+                logger.debug(f"Modelo {current_model} en backoff ({remain}s), saltando.")
+                continue
 
-            # Esperar a tener tokens de rate
-            have = await _acquire_tokens(tokens_needed)
-            if not have:
-                # No pudimos obtener tokens en tiempo razonable
-                last_exc = RuntimeError("Timeout esperando cuota de rate limit local")
-                raise last_exc
+            for retry in range(1, retries + 1):
+                if not await self._acquire_slot():
+                    last_exc = RuntimeError("Timeout esperando slot de rate limit local.")
+                    break
 
-            # Controlar concurrencia
-            async with self._ai_semaphore:
-                try:
-                    response = await asyncio.to_thread(
-                        self.client.models.generate_content,
-                        model=model,
-                        contents=contents,
-                        config=config,
-                    )
-                    # Metrics: success and token accounting
+                async with self._semaphore:
                     try:
-                        self._inc_metric('success', 1)
-                        self._inc_metric('total_tokens', tokens_needed if 'tokens_needed' in locals() else 1)
-                    except Exception:
-                        pass
-                    return response
-                except Exception as e:  # noqa: BLE001 - manejamos varias excepciones
-                    last_exc = e
+                        resp = await asyncio.to_thread(
+                            self.client.models.generate_content,
+                            model=current_model,
+                            contents=contents,
+                            config=config,
+                        )
+                        self._inc("success")
+                        if current_model != model:
+                            self._inc("fallbacks")
+                            logger.info(f"Fallback exitoso: {model} → {current_model}")
+                        return resp
 
-                    # Detectar errores temporales (503 / UNAVAILABLE) y 429 (quota)
-                    retriable = False
-                    retry_delay_override: Optional[float] = None
-                    if genai_errors is not None and isinstance(e, genai_errors.ServerError):
-                        retriable = True
-                    else:
-                        msg = str(e).lower()
-                        if "503" in msg or "unavailable" in msg or "high demand" in msg:
-                            retriable = True
-                        # Buscar RetryInfo para 429 con suggestion
-                        m = re.search(r'retry in (\d+\.?\d*)s', msg)
-                        if m:
-                            try:
-                                retry_delay_override = float(m.group(1))
-                            except Exception:
-                                pass
+                    except Exception as e:
+                        last_exc = e
+                        is_429 = is_503 = False
+                        if genai_errors:
+                            is_429 = isinstance(e, genai_errors.ClientError)
+                            is_503 = isinstance(e, genai_errors.ServerError)
+                        else:
+                            msg_l = str(e).lower()
+                            is_429 = "429" in msg_l or "quota" in msg_l or "resource_exhausted" in msg_l
+                            is_503 = "503" in msg_l or "unavailable" in msg_l
 
-                    if attempt < retries and retriable:
-                        # Metrics: record a retry
-                        self._inc_metric('retries', 1)
-                        # Exponential backoff + jitter
-                        base = initial_backoff * (2 ** (attempt - 1))
-                        jitter = random.uniform(0, base * 0.1)
-                        wait = retry_delay_override if retry_delay_override is not None else (base + jitter)
-                        await asyncio.sleep(wait)
-                        continue
+                        if is_429:
+                            self._inc("errors_429")
+                            delay = _extract_retry_delay(e) or (backoff_base ** retry * 10)
+                            self._model_backoff[current_model] = monotonic() + delay
+                            logger.warning(
+                                f"429 en {current_model} – backoff {delay:.0f}s, "
+                                f"saltando al siguiente modelo."
+                            )
+                            break   # ← NO reintentar este modelo, pasar al siguiente
 
-                    # Si es ClientError (por ejemplo 429) intentamos extraer RetryInfo
-                    if genai_errors is not None and isinstance(e, genai_errors.ClientError):
-                        # 429 / quota exceeded
-                        self._inc_metric('errors_429', 1)
-                        rd = _parse_retry_delay_from_error(e)
-                        if rd:
-                            # Marcar modelo en backoff para evitar usarlo hasta pasado rd
-                            try:
-                                self._model_backoff_until[model] = monotonic() + rd
-                            except Exception:
-                                pass
-                            # Si existe un fallback, probarlo; si no, esperar rd y reintentar
-                            if attempt < retries:
-                                await asyncio.sleep(rd)
+                        if is_503:
+                            self._inc("errors_503")
+                            if retry < retries:
+                                wait = (backoff_base ** retry) + random.uniform(0.0, 0.5)
+                                self._inc("retries")
+                                await asyncio.sleep(wait)
                                 continue
-                    # count server errors (503)
-                    if genai_errors is not None and isinstance(e, genai_errors.ServerError):
-                        self._inc_metric('errors_503', 1)
+                            break
 
-                    # Intentar modelos de fallback si se proporcionan (sin reintentos largos)
-                    if fallback_models:
-                        for fb in fallback_models:
-                            try:
-                                # small delay before fallback
-                                await asyncio.sleep(0.5)
-                                response = await asyncio.to_thread(
-                                    self.client.models.generate_content,
-                                    model=fb,
-                                    contents=contents,
-                                    config=config,
-                                )
-                                # Metrics: fallback used
-                                self._inc_metric('fallbacks', 1)
-                                return response
-                            except Exception as e_fb:
-                                last_exc = e_fb
-                                continue
+                        # Error no retriable (validación, seguridad, etc.)
+                        logger.error(f"Error no retriable en {current_model}: {e}")
+                        break
 
-                    # Si llegamos aquí, re-lanzamos la última excepción
-                    raise last_exc
+        raise last_exc or RuntimeError("Todos los modelos de chat fallaron.")
 
-    async def _send_via_webhook(self, channel: discord.TextChannel, user: discord.User, text: str):
-        webhooks = await channel.webhooks()
-        webhook = discord.utils.get(webhooks, name="TortuguBot_IA")
-        if not webhook:
-            webhook = await channel.create_webhook(name="TortuguBot_IA")
-        
-        # Segmentar texto si supera 2000 chars
-        chunks = [text[i:i+1900] for i in range(0, len(text), 1900)]
-        for chunk in chunks:
-            await webhook.send(
-                content=chunk,
-                username="TortuguBot IA",
-                avatar_url=self.bot.user.display_avatar.url
-            )
+    # ── Envío de respuesta ────────────────────────────────────────────────────
 
-    def _estimate_input_tokens(self, contents) -> int:
+    async def _send_via_webhook(self, channel: discord.TextChannel, text: str):
         try:
-            total_chars = 0
-            for content in contents:
-                parts = getattr(content, 'parts', None)
-                if parts:
-                    for p in parts:
-                        txt = getattr(p, 'text', None)
-                        if txt:
-                            total_chars += len(str(txt))
-            tokens = max(1, int(total_chars / max(1, self._chars_per_token)))
-            return tokens
-        except Exception:
-            return 1
+            webhooks = await channel.webhooks()
+            wh = discord.utils.get(webhooks, name="TortuguBot_IA")
+            if not wh:
+                wh = await channel.create_webhook(name="TortuguBot_IA")
+            for chunk in [text[i : i + 1900] for i in range(0, len(text), 1900)]:
+                await wh.send(
+                    content=chunk,
+                    username="TortuguBot IA",
+                    avatar_url=self.bot.user.display_avatar.url,
+                )
+        except Exception as e:
+            logger.error(f"Error enviando por webhook: {e}")
 
-    async def _ai_worker(self, worker_id: int):
-        logger.info(f"IA worker {worker_id} iniciado")
+    async def _send_reply(
+        self, message: discord.Message, text: str, is_ai_channel: bool
+    ):
+        if is_ai_channel and isinstance(message.channel, discord.TextChannel):
+            await self._send_via_webhook(message.channel, text)
+        else:
+            for chunk in [text[i : i + _DISCORD_MAX] for i in range(0, len(text), _DISCORD_MAX)]:
+                await message.reply(chunk, mention_author=False)
+
+    # ── Worker ────────────────────────────────────────────────────────────────
+
+    async def _worker_loop(self, worker_id: int):
+        logger.info(f"IA worker {worker_id} iniciado.")
         while True:
-            job = await self._ai_queue.get()
+            job = await self._queue.get()
             try:
                 await self._process_job(job)
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error(f"Error en worker IA {worker_id}: {e}", exc_info=True)
+                logger.error(f"Worker {worker_id} error: {e}", exc_info=True)
             finally:
-                try:
-                    self._ai_queue.task_done()
-                except Exception:
-                    pass
+                self._queue.task_done()
 
     async def _process_job(self, job: dict):
-        message: discord.Message = job.get('message')
-        ctx_id: str = job.get('ctx_id')
-        contents = job.get('contents')
-        config = job.get('config')
-        fallback = job.get('fallback', [])
-        is_ai_channel = job.get('is_ai_channel', False)
+        message:       discord.Message = job["message"]
+        ctx_id:        str             = job["ctx_id"]
+        config                         = job["config"]
+        fallback:      List[str]       = job["fallback"]
+        is_ai_channel: bool            = job["is_ai_channel"]
+        user_parts:    list            = job["user_parts"]
 
-        # Global backoff check
-        now = monotonic()
-        if self._global_backoff_until and now < self._global_backoff_until:
-            retry_after = int(self._global_backoff_until - now)
+        # Global backoff
+        if self._global_backoff > monotonic():
+            wait = int(self._global_backoff - monotonic())
             try:
-                await message.channel.send(f"❌ IA en mantenimiento temporal, inténtalo en {retry_after}s.")
+                await message.channel.send(
+                    f"❌ IA en mantenimiento temporal, intenta en {wait}s."
+                )
             except Exception:
                 pass
             return
 
+        # Elegir modelo disponible (respetando backoff individual)
+        model_pref = self.db.get_ai_config(message.guild.id).get("ai_model", CHAT_MODELS[0])
+        # Construir orden: modelo configurado primero, resto de cadena después
+        chain = [model_pref] + [m for m in CHAT_MODELS if m != model_pref]
+        chosen = next(
+            (m for m in chain if self._model_backoff.get(m, 0.0) < monotonic()),
+            None,
+        )
+        if not chosen:
+            try:
+                await message.channel.send(
+                    "❌ Todos los modelos están temporalmente limitados. Intenta más tarde."
+                )
+            except Exception:
+                pass
+            return
+
+        # Actualizar historial con el turno del usuario
+        if ctx_id not in self._chat_histories:
+            self._chat_histories[ctx_id] = []
+        self._chat_histories[ctx_id].append(
+            types.Content(role="user", parts=user_parts)
+        )
+        if len(self._chat_histories[ctx_id]) > _HISTORY_MAX:
+            self._chat_histories[ctx_id] = self._chat_histories[ctx_id][-_HISTORY_MAX:]
+
+        contents = list(self._chat_histories[ctx_id])
+
         try:
             async with message.channel.typing():
-                # Elegir modelo disponible (si el primario está en backoff, usar fallback)
-                model = self.db.get_ai_config(message.guild.id).get('ai_model', 'gemini-2.5-flash')
-                models_order = [model] + fallback
-                chosen = None
-                for m in models_order:
-                    until = self._model_backoff_until.get(m, 0)
-                    if until < monotonic():
-                        chosen = m
-                        break
-                if not chosen:
-                    # No hay modelos disponibles ahora mismo
-                    await message.channel.send("❌ Todos los modelos están temporalmente limitados. Intenta de nuevo más tarde.")
-                    return
-
-                start_time = monotonic()
-                response = await self._generate_content_with_retries(
+                t0 = monotonic()
+                response = await self._generate_with_retries(
                     model=chosen,
                     contents=contents,
                     config=config,
-                    retries=3,
-                    initial_backoff=1.0,
-                    fallback_models=[m for m in models_order if m != chosen],
+                    fallback_models=[m for m in chain if m != chosen],
                 )
-                # Record latency for the request
-                try:
-                    latency = monotonic() - start_time
-                    self._record_latency(latency)
-                except Exception:
-                    pass
+                self._inc("total_latency", monotonic() - t0)
+                self._inc("latency_count")
 
-                reply_text = getattr(response, 'text', None) or "No pude generar una respuesta."
-                try:
-                    # compute latency if available: we used monotonic before/after only here
-                    # Note: if the caller wants more precise timing, can be added in _generate_content_with_retries
-                    if now_after:
-                        latency = 0.0
-                        try:
-                            # attempt to get start time stored in job (not present) — fallback to 0
-                            latency = 0.0
-                        except Exception:
-                            latency = 0.0
-                        # record the measured latency as a rough sample using response timing
-                        # We don't have start timestamp here; instead rely on total_latency updated elsewhere
-                        pass
-                except Exception:
-                    pass
+            reply_text = getattr(response, "text", None) or "No pude generar una respuesta."
 
-                # Añadir respuesta al historial real si aún existe
-                if ctx_id in self.chat_histories:
-                    try:
-                        self.chat_histories[ctx_id].append(
-                            types.Content(role="model", parts=[types.Part.from_text(text=reply_text)])
-                        )
-                        if len(self.chat_histories[ctx_id]) > 20:
-                            self.chat_histories[ctx_id] = self.chat_histories[ctx_id][-20:]
-                    except Exception:
-                        pass
+            # Guardar turno del modelo
+            self._chat_histories[ctx_id].append(
+                types.Content(role="model", parts=[types.Part.from_text(text=reply_text)])
+            )
+            if len(self._chat_histories[ctx_id]) > _HISTORY_MAX:
+                self._chat_histories[ctx_id] = self._chat_histories[ctx_id][-_HISTORY_MAX:]
 
-                # Enviar respuesta
-                if is_ai_channel and isinstance(message.channel, discord.TextChannel):
-                    await self._send_via_webhook(message.channel, message.author, reply_text)
-                else:
-                    if len(reply_text) > 2000:
-                        reply_text = reply_text[:1996] + "..."
-                    await message.reply(reply_text)
+            await self._send_reply(message, reply_text, is_ai_channel)
+
         except Exception as e:
             logger.error(f"Error procesando job IA: {e}", exc_info=True)
             try:
@@ -587,104 +651,262 @@ class IA(commands.Cog):
             except Exception:
                 pass
 
+    # ── Listener de mensajes ──────────────────────────────────────────────────
+
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        # Ignorar mensajes de bots, webhooks o si client no está configurado
-        if message.author.bot or getattr(message, 'webhook_id', None) or not self.client or not message.guild:
+        if (
+            message.author.bot
+            or getattr(message, "webhook_id", None)
+            or not self.client
+            or not message.guild
+        ):
             return
 
-        cfg = self.db.get_ai_config(message.guild.id)
+        cfg           = self.db.get_ai_config(message.guild.id)
         ai_channel_id = cfg.get("ai_channel_id")
-        ai_role_id = cfg.get("ai_role_id")
-        
-        is_ai_channel = (message.channel.id == ai_channel_id)
-        has_role = any(r.id == ai_role_id for r in message.author.roles) if ai_role_id else False
-        is_pinging_bot = self.bot.user in message.mentions
+        ai_role_id    = cfg.get("ai_role_id")
+        is_ai_channel = message.channel.id == ai_channel_id
+        has_role      = (
+            any(r.id == ai_role_id for r in message.author.roles) if ai_role_id else False
+        )
+        is_bot_ping = self.bot.user in message.mentions
 
-        # 1. Chat Único
-        # 2. AIPing (@bot)
-        
-        if is_ai_channel or (is_pinging_bot and has_role):
-            ctx_id = f"{message.guild.id}_{message.author.id}"
-            
-            # Inicializar historial
-            if ctx_id not in self.chat_histories:
-                self.chat_histories[ctx_id] = []
-            
-            # Limpiar contenido del mensaje si es ping
-            user_text = message.content.replace(f"<@{self.bot.user.id}>", "").strip()
-            
-            # Si hay un mensaje referenciado, añadirlo al contexto
-            if message.reference and message.reference.message_id:
-                try:
-                    ref_msg = await message.channel.fetch_message(message.reference.message_id)
-                    user_text = f"[En respuesta a {ref_msg.author.name}: '{ref_msg.content}']\n" + user_text
-                except:
-                    pass
+        if not (is_ai_channel or (is_bot_ping and has_role)):
+            return
 
-            # Añadir mensaje al historial de Gemini
-            self.chat_histories[ctx_id].append(
-                types.Content(role="user", parts=[types.Part.from_text(text=user_text)])
+        # Per-user cooldown
+        now  = monotonic()
+        last = self._last_req.get(message.author.id, 0.0)
+        if now - last < self._user_interval:
+            wait = int(self._user_interval - (now - last))
+            try:
+                await message.reply(
+                    f"⏳ Espera {wait}s antes de otra consulta.", mention_author=False
+                )
+            except Exception:
+                pass
+            return
+
+        # Texto limpio
+        user_text = message.content.replace(f"<@{self.bot.user.id}>", "").strip()
+
+        # Contexto de mensaje referenciado
+        if message.reference and message.reference.message_id:
+            try:
+                ref = await message.channel.fetch_message(message.reference.message_id)
+                user_text = (
+                    f"[Respondiendo a {ref.author.display_name}: «{ref.content[:200]}»]\n"
+                    + user_text
+                )
+            except Exception:
+                pass
+
+        # Construir parts ANTES de encolar (descargas resueltas, sin races)
+        try:
+            user_parts = await self._build_user_parts(message, user_text)
+        except Exception as e:
+            logger.error(f"Error construyendo parts: {e}")
+            user_parts = [types.Part.from_text(text=user_text or "[mensaje vacío]")]
+
+        ctx_id = f"{message.guild.id}_{message.author.id}"
+        model  = cfg.get("ai_model", CHAT_MODELS[0])
+
+        config = types.GenerateContentConfig(
+            system_instruction=self._get_system_prompt(message.guild.id),
+            temperature=0.7,
+            tools=[types.Tool(google_search=types.GoogleSearch())],
+        )
+        fallback = [m for m in CHAT_MODELS if m != model]
+
+        job = {
+            "message":       message,
+            "ctx_id":        ctx_id,
+            "config":        config,
+            "fallback":      fallback,
+            "is_ai_channel": is_ai_channel,
+            "user_parts":    user_parts,
+        }
+
+        try:
+            self._queue.put_nowait(job)
+            self._last_req[message.author.id] = now
+            self._inc("requests")
+            qsz = self._queue.qsize()
+            if qsz > self._metrics.get("queue_max", 0):
+                self._metrics["queue_max"] = qsz
+        except asyncio.QueueFull:
+            try:
+                await message.reply(
+                    "❌ Servidor de IA ocupado, intenta en unos segundos.", mention_author=False
+                )
+            except Exception:
+                pass
+
+    # ── Slash commands ─────────────────────────────────────────────────────────
+
+    @app_commands.command(name="iaconfig", description="Configura el módulo de Inteligencia Artificial")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def iaconfig(self, interaction: discord.Interaction):
+        if not self.client:
+            return await interaction.response.send_message(
+                "❌ API de Gemini no configurada (.env).", ephemeral=True
+            )
+        cfg   = self.db.get_ai_config(interaction.guild_id)
+        embed = self._build_ia_embed(interaction.guild, cfg)
+        view  = IAConfigView(self, interaction.guild_id)
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+    @app_commands.command(
+        name="iasync",
+        description="Sincroniza el contexto del servidor para darle contexto a la IA",
+    )
+    @app_commands.checks.has_permissions(administrator=True)
+    async def iasync(self, interaction: discord.Interaction):
+        if not self.client:
+            return await interaction.response.send_message(
+                "❌ API de Gemini no configurada.", ephemeral=True
+            )
+        await interaction.response.defer(ephemeral=True)
+        g = interaction.guild
+        parts = [
+            f"Servidor: {g.name}",
+            f"Descripción: {g.description or 'Ninguna'}",
+            f"Miembros: {g.member_count}",
+            "\n--- Canales de texto ---",
+            *[
+                f"#{c.name}" + (f" – {c.topic}" if c.topic else "")
+                for c in g.text_channels[:20]
+            ],
+            "\n--- Roles principales ---",
+            *[f"- {r.name}" for r in reversed(g.roles[1:15])],
+        ]
+        self._server_contexts[g.id] = "\n".join(parts)
+        await interaction.followup.send(
+            "✅ Contexto del servidor sincronizado y cargado en memoria para la IA."
+        )
+
+    @app_commands.command(name="ai_status", description="Métricas y estado del servicio IA")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def ai_status(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        m       = self._metrics
+        avg_lat = m["total_latency"] / max(1.0, m["latency_count"])
+
+        embed = discord.Embed(title="📊 Estado del Servicio IA", color=discord.Color.blue())
+        fields = [
+            ("Cola actual",          str(self._queue.qsize())),
+            ("Cola máx registrada",  str(int(m["queue_max"]))),
+            ("Requests totales",     str(int(m["requests"]))),
+            ("Respuestas OK",        str(int(m["success"]))),
+            ("Reintentos (503)",     str(int(m["retries"]))),
+            ("Fallbacks usados",     str(int(m["fallbacks"]))),
+            ("Errores 429",          str(int(m["errors_429"]))),
+            ("Errores 503",          str(int(m["errors_503"]))),
+            ("Adjuntos procesados",  str(int(m["multimodal"]))),
+            ("Imágenes generadas",   str(int(m["images_gen"]))),
+            ("Latency avg",          f"{avg_lat:.2f}s"),
+            ("Concurrencia",         str(self._concurrency)),
+            ("Rate (req/periodo)",   f"{self._rate_cap}/{self._rate_period:.0f}s"),
+        ]
+        for name, value in fields:
+            embed.add_field(name=name, value=value, inline=True)
+
+        # Backoffs activos
+        now = monotonic()
+        backoffs = [
+            f"`{mdl}`: {int(u - now)}s"
+            for mdl, u in self._model_backoff.items()
+            if u > now
+        ]
+        if self._global_backoff > now:
+            backoffs.append(f"`GLOBAL`: {int(self._global_backoff - now)}s")
+        embed.add_field(
+            name="🚦 Backoffs activos",
+            value="\n".join(backoffs) if backoffs else "✅ Ninguno",
+            inline=False,
+        )
+        # Historial en memoria
+        embed.add_field(
+            name="🗃️ Historiales en RAM",
+            value=f"{len(self._chat_histories)} usuarios",
+            inline=False,
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @app_commands.command(
+        name="imagine",
+        description="Genera una imagen con IA a partir de una descripción",
+    )
+    @app_commands.describe(prompt="Descripción de la imagen que quieres generar")
+    async def imagine(self, interaction: discord.Interaction, prompt: str):
+        if not self.client:
+            return await interaction.response.send_message(
+                "❌ API de Gemini no configurada.", ephemeral=True
             )
 
-            # Mantener máximo 20 interacciones de memoria
-            if len(self.chat_histories[ctx_id]) > 20:
-                self.chat_histories[ctx_id] = self.chat_histories[ctx_id][-20:]
+        # Verificar si /imagine está habilitado en este guild
+        cfg = self.db.get_ai_config(interaction.guild_id)
+        if not cfg.get("ai_imagine_enabled", 1):
+            return await interaction.response.send_message(
+                "❌ La generación de imágenes está desactivada en este servidor.",
+                ephemeral=True,
+            )
 
-            # Encolar la petición para evitar picos y manejar rate-limits
-            try:
-                now = monotonic()
-                last = self._last_request.get(message.author.id, 0)
-                if now - last < self._min_user_interval:
-                    retry_after = int(self._min_user_interval - (now - last))
-                    try:
-                        await message.reply(f"⏳ Por favor espera {retry_after}s antes de otra consulta de IA.")
-                    except Exception:
-                        pass
-                    return
+        await interaction.response.defer()
 
-                # Preparar configuración y snapshot del historial
-                model = cfg.get("ai_model", "gemini-2.5-flash")
-                sys_prompt = self._get_system_prompt(message.guild.id)
-                config = types.GenerateContentConfig(
-                    system_instruction=sys_prompt,
-                    temperature=0.7,
-                    tools=[{"google_search": {}}],
+        try:
+            response = await asyncio.to_thread(
+                self.client.models.generate_images,
+                model=IMAGEN_MODEL,
+                prompt=prompt,
+                config=types.GenerateImagesConfig(
+                    number_of_images=1,
+                    output_mime_type="image/png",
+                ),
+            )
+
+            if not response.generated_images:
+                return await interaction.followup.send(
+                    "❌ No se generó ninguna imagen. Prueba con otro prompt."
                 )
 
-                fallback = ["gemini-2.5-pro"] if "flash" in model else ["gemini-2.5-flash"]
+            img_bytes = response.generated_images[0].image.image_bytes
+            file  = discord.File(io.BytesIO(img_bytes), filename="imagen.png")
+            embed = discord.Embed(
+                title="🖼️ Imagen generada",
+                description=f"**Prompt:** {prompt[:300]}",
+                color=discord.Color.purple(),
+            )
+            embed.set_image(url="attachment://imagen.png")
+            embed.set_footer(text=f"Modelo: {IMAGEN_MODEL}")
+            await interaction.followup.send(embed=embed, file=file)
+            self._inc("images_gen")
 
-                contents_snapshot = list(self.chat_histories[ctx_id])
+        except Exception as e:
+            logger.error(f"Error generando imagen: {e}", exc_info=True)
+            msg = str(e).lower()
+            if "safety" in msg or "blocked" in msg or "policy" in msg:
+                reply = "❌ Prompt bloqueado por políticas de contenido. Intenta otra descripción."
+            elif "429" in msg or "quota" in msg or "resource_exhausted" in msg:
+                reply = "❌ Límite de generación de imágenes alcanzado. Intenta en unos minutos."
+            elif "not found" in msg or "not supported" in msg:
+                reply = (
+                    f"❌ Modelo `{IMAGEN_MODEL}` no disponible en tu plan. "
+                    "Verifica el acceso en Google AI Studio."
+                )
+            else:
+                reply = "❌ Error al generar la imagen."
+            await interaction.followup.send(reply)
 
-                job = {
-                    'message': message,
-                    'ctx_id': ctx_id,
-                    'contents': contents_snapshot,
-                    'config': config,
-                    'fallback': fallback,
-                    'is_ai_channel': is_ai_channel,
-                }
+    @app_commands.command(name="iaclear", description="Borra tu historial de conversación con la IA")
+    async def iaclear(self, interaction: discord.Interaction):
+        ctx_id = f"{interaction.guild_id}_{interaction.user.id}"
+        removed = ctx_id in self._chat_histories
+        self._chat_histories.pop(ctx_id, None)
+        msg = "✅ Historial de conversación borrado." if removed else "ℹ️ No tenías historial activo."
+        await interaction.response.send_message(msg, ephemeral=True)
 
-                try:
-                    self._ai_queue.put_nowait(job)
-                    self._last_request[message.author.id] = now
-                    # Metrics: new request and track queue max
-                    self._inc_metric('requests', 1)
-                    qsz = self._ai_queue.qsize()
-                    if qsz > self._metrics.get('queue_max', 0):
-                        self._metrics['queue_max'] = qsz
-                except asyncio.QueueFull:
-                    try:
-                        await message.reply("❌ Servidor de IA ocupado, inténtalo en unos segundos.")
-                    except Exception:
-                        pass
-                return
-            except Exception as e:
-                logger.error(f"Error en IA al encolar: {e}", exc_info=True)
-                try:
-                    await message.channel.send("❌ Error al procesar la petición de IA.")
-                except Exception:
-                    pass
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(IA(bot))
