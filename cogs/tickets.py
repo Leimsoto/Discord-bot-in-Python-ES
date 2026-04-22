@@ -3,6 +3,7 @@ import json
 import asyncio
 from datetime import datetime, timezone
 import io
+import re
 
 import discord
 from discord.ext import commands
@@ -224,6 +225,16 @@ class Tickets(commands.Cog):
         self.bot = bot
         self.db = bot.db # type: ignore
 
+    def _sanitize_channel_name(self, name: str, max_len: int = 90) -> str:
+        """Sanitiza un nombre para canal: lowercase, espacios→guiones, solo a-z0-9-_ y acorta."""
+        s = name.lower()
+        s = re.sub(r"\s+", "-", s)
+        s = re.sub(r"[^a-z0-9-_]", "", s)
+        s = re.sub(r"-{2,}", "-", s).strip("-")
+        if not s:
+            s = f"ticket-{int(datetime.now(timezone.utc).timestamp())}"
+        return s[:max_len]
+
     async def create_ticket_channel(self, interaction: discord.Interaction, category: dict, answers: list):
         guild = interaction.guild
         config = self.db.get_ticket_config(guild.id)
@@ -236,9 +247,18 @@ class Tickets(commands.Cog):
         ticket = self.db.create_ticket(guild.id, interaction.user.id, category["name"])
         global_num = ticket["global_number"]
         
-        # Generar nombre del canal según plantilla
+        # Generar nombre del canal según plantilla y sanitizarlo
         name_template = config.get("channel_name_template", "⚒️{username}-{number}")
-        channel_name = name_template.replace("{username}", interaction.user.name).replace("{number}", str(global_num))
+        raw_name = name_template.replace("{username}", interaction.user.name).replace("{number}", str(global_num))
+        channel_name = self._sanitize_channel_name(raw_name)
+
+        # Asegurar unicidad añadiendo sufijo si hace falta
+        existing_names = {c.name for c in guild.text_channels}
+        base_name = channel_name
+        suffix = 1
+        while channel_name in existing_names:
+            channel_name = f"{base_name[:80]}-{suffix}"
+            suffix += 1
         
         allowed_roles = json.loads(config.get("allowed_roles", "[]"))
         immune_roles = json.loads(config.get("immune_roles", "[]"))

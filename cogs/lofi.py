@@ -95,11 +95,18 @@ class LofiRadio(commands.Cog):
                         
             vc.play(audio_source, after=after_playback)
             
-            # Cambiar estado
-            fut = asyncio.run_coroutine_threadsafe(channel.edit(status=f"🎶 {station_name} | Chill & Relax"), self.bot.loop)
+            # Actualizar presencia del bot para indicar la estación (no editar el canal)
             try:
+                coro = self.bot.change_presence(
+                    activity=discord.Activity(
+                        type=discord.ActivityType.listening,
+                        name=f"🎶 {station_name} | Chill & Relax",
+                    )
+                )
+                fut = asyncio.run_coroutine_threadsafe(coro, self.bot.loop)
                 fut.result(timeout=5)
             except Exception:
+                # Fallar silenciosamente si no es posible cambiar la presencia
                 pass
         except Exception:
             logger.exception(f"Error reproduciendo radio en el canal {channel.id}")
@@ -190,9 +197,14 @@ class LofiRadio(commands.Cog):
                 "order": "clickcount",
                 "reverse": "true"
             }
-            resp = requests.get(RADIO_API_URL, params=params, timeout=5)
-            data = resp.json()
-            
+            try:
+                # Ejecutar la petición blocking en un hilo para no bloquear el event loop
+                resp = await asyncio.to_thread(requests.get, RADIO_API_URL, params=params, timeout=5)
+                data = resp.json()
+            except Exception as e:
+                logger.error(f"Error consultando la API de radios: {e}")
+                return await interaction.followup.send("❌ Error consultando la API de radios.")
+
             if not data:
                 return await interaction.followup.send("❌ No se encontraron estaciones con ese nombre.")
                 

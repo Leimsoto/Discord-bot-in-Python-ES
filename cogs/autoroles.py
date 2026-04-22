@@ -28,8 +28,11 @@ class AutoRoles(commands.Cog):
         except (ValueError, discord.NotFound):
             return await interaction.response.send_message("❌ Mensaje no encontrado en este canal. Asegúrate de poner el ID correcto.", ephemeral=True)
         
-        if rol.is_bot_managed() or rol.is_premium_subscriber() or rol.is_integration() or rol.is_default():
-            return await interaction.response.send_message("❌ No puedes usar roles manejados por bots, roles de booster, o everyone.", ephemeral=True)
+        # Evitar roles gestionados por integraciones o @everyone
+        if rol.managed or rol == interaction.guild.default_role:
+            return await interaction.response.send_message(
+                "❌ No puedes usar roles gestionados por integraciones o @everyone.", ephemeral=True
+            )
             
         if rol.position >= interaction.guild.me.top_role.position:
             return await interaction.response.send_message("❌ El rol es superior al rol más alto del bot. Mueve el rol del bot hacia arriba en la configuración del servidor.", ephemeral=True)
@@ -37,15 +40,22 @@ class AutoRoles(commands.Cog):
         existing = self.db.get_autorole(msg_id)
         mapping = {}
         if existing:
-            mapping = json.loads(existing["mapping_data"])
-            
-        # Parse custom emoji
-        emoji_str = emoji
-        if "<:" in emoji and ">" in emoji:
-            emoji_str = emoji.split(":")[1] # fallback simple, but usually reaction raw name or id is better
-            # En discord.py, RawReactionActionEvent.emoji.name para custom es el nombre
-        
-        mapping[emoji_str] = rol.id
+            try:
+                mapping = json.loads(existing.get("mapping_data") or "{}")
+            except Exception:
+                mapping = {}
+
+        # Normalizar y almacenar múltiples claves para el emoji (forma completa y nombre)
+        keys = {emoji}
+        if isinstance(emoji, str) and emoji.startswith("<") and ":" in emoji:
+            try:
+                name = emoji.split(":")[1]
+                keys.add(name)
+            except Exception:
+                pass
+
+        for k in keys:
+            mapping[k] = rol.id
         
         self.db.set_autorole(msg_id, interaction.guild_id, interaction.channel.id, json.dumps(mapping))
         
@@ -60,21 +70,27 @@ class AutoRoles(commands.Cog):
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
         if payload.user_id == self.bot.user.id:
             return
-            
+
         row = self.db.get_autorole(payload.message_id)
-        if not row: return
-        
-        mapping = json.loads(row["mapping_data"])
-        emoji_key = str(payload.emoji)
-        if payload.emoji.is_custom_emoji():
-            # Si el emoji provisto por el usuario en el setup fue el formato <a:name:id>, str(payload.emoji) funciona.
-            pass
-            
-        # Buscar compatibilidad simple
-        matched_role_id = mapping.get(str(payload.emoji))
-        if not matched_role_id:
-            matched_role_id = mapping.get(payload.emoji.name)
-            
+        if not row:
+            return
+
+        try:
+            mapping = json.loads(row.get("mapping_data") or "{}")
+        except Exception:
+            mapping = {}
+
+        # Probar varias representaciones del emoji: str() y name
+        keys_to_try = [str(payload.emoji)]
+        if hasattr(payload.emoji, "name") and payload.emoji.name:
+            keys_to_try.append(payload.emoji.name)
+
+        matched_role_id = None
+        for k in keys_to_try:
+            if k in mapping:
+                matched_role_id = mapping[k]
+                break
+
         if matched_role_id:
             guild = self.bot.get_guild(payload.guild_id)
             if guild:
@@ -90,15 +106,26 @@ class AutoRoles(commands.Cog):
     async def on_raw_reaction_remove(self, payload: discord.RawReactionActionEvent):
         if payload.user_id == self.bot.user.id:
             return
-            
+
         row = self.db.get_autorole(payload.message_id)
-        if not row: return
-        
-        mapping = json.loads(row["mapping_data"])
-        matched_role_id = mapping.get(str(payload.emoji))
-        if not matched_role_id:
-            matched_role_id = mapping.get(payload.emoji.name)
-            
+        if not row:
+            return
+
+        try:
+            mapping = json.loads(row.get("mapping_data") or "{}")
+        except Exception:
+            mapping = {}
+
+        keys_to_try = [str(payload.emoji)]
+        if hasattr(payload.emoji, "name") and payload.emoji.name:
+            keys_to_try.append(payload.emoji.name)
+
+        matched_role_id = None
+        for k in keys_to_try:
+            if k in mapping:
+                matched_role_id = mapping[k]
+                break
+
         if matched_role_id:
             guild = self.bot.get_guild(payload.guild_id)
             if guild:

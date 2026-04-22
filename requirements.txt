@@ -1,24 +1,22 @@
-# ── Core ─────────────────────────────────────────────────────────────────────
 discord.py>=2.3.0
 python-dotenv>=1.0.0
 psutil>=5.9.0
 Flask>=3.0.0
 
-# ── Base de datos alternativas (descomenta la que uses) ───────────────────────
-# PostgreSQL
-# psycopg2-binary>=2.9.0
+# Networking / HTTP
+requests>=2.31.0
 
-# MariaDB / MySQL
-# PyMySQL>=1.1.0
-
-# ── Extensiones (Nuevos Módulos) ──────────────────────────────────────────────
+# Audio / Voice
 PyNaCl>=1.5.0
+yt-dlp>=2024.11.6
+
+# AI / Export
 google-genai>=0.3.0
 chat-exporter>=2.5.0
-requests>=2.31.0
-# Extra: extracción de streams de YouTube u otras fuentes (usado por /radio play)
-yt-dlp
-# Requisito opcional para backend de voz según logs: "davey"
-davey
-psycopg2-binary>=2.9.0
-PyMySQL>=1.1.0
+
+# Optional DB drivers (uncomment the one you use)
+# psycopg2-binary>=2.9.0  # PostgreSQL
+# PyMySQL>=1.1.0         # MariaDB / MySQL
+
+# Optional / extras
+# davey  # optional voice backend, uncomment if used

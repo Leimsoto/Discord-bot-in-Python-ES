@@ -75,12 +75,12 @@ class Welcomes(commands.Cog):
                 if inviter:
                     desc += f"\n\n💌 Invitado por: {inviter.mention}"
                 
-                embed = discord.Embed(
-                    title=title or None,
-                    description=desc or None,
-                    color=discord.Color(data.get("color", 0x5865F2)),
-                    timestamp=datetime.now(timezone.utc) if data.get("timestamp") else None
-                )
+                    embed = discord.Embed(
+                        title=title or None,
+                        description=desc or None,
+                        color=discord.Color(data.get("color", 0x5865F2)),
+                        timestamp=datetime.now(timezone.utc) if data.get("timestamp") else None
+                    )
                 if data.get("image_url"): embed.set_image(url=data.get("image_url"))
                 if data.get("thumbnail_url"): embed.set_thumbnail(url=member.display_avatar.url)
                 if data.get("footer_text"): embed.set_footer(text=data.get("footer_text"), icon_url=data.get("footer_icon"))
@@ -113,7 +113,7 @@ class Welcomes(commands.Cog):
                     embed = discord.Embed(
                         title=title,
                         description=desc,
-                        color=discord.Color.nitro_pink()
+                        color=discord.Color.purple()
                     )
                     if gif_url:
                         embed.set_image(url=gif_url)
