@@ -28,6 +28,7 @@ DEFAULT_LOG_EVENTS = {
     "voice_join_leave": True,
     "role_changes": True,
     "nickname_changes": True,
+    "channel_updates": True,
     "message_send": False,
     "reactions": False,
 }
@@ -42,26 +43,38 @@ class ServerUtils(commands.Cog):
 
     def _get_log_events(self, guild_id: int) -> dict:
         cfg = self.db.get_server_config(guild_id)
+        events = dict(DEFAULT_LOG_EVENTS)
         if cfg.get("log_events"):
             try:
-                return json.loads(cfg["log_events"])
+                raw_events = json.loads(cfg["log_events"])
+                if isinstance(raw_events, dict):
+                    events.update({key: bool(value) for key, value in raw_events.items() if key in DEFAULT_LOG_EVENTS})
+                else:
+                    logger.warning("log_events inválido en guild %s: no es un objeto JSON", guild_id)
             except json.JSONDecodeError:
-                pass
-        return dict(DEFAULT_LOG_EVENTS)
+                logger.warning("log_events contiene JSON inválido en guild %s", guild_id)
+        return events
 
     async def _send_server_log(self, guild: discord.Guild, embed: discord.Embed) -> None:
         cfg = self.db.get_server_config(guild.id)
         if not cfg.get("serverlog_enabled", 1):
             return
+
         ch_id = cfg.get("serverlog_channel")
         if not ch_id:
             return
+
         channel = guild.get_channel(ch_id)
-        if isinstance(channel, discord.TextChannel):
-            try:
-                await channel.send(embed=embed)
-            except discord.Forbidden:
-                pass
+        if not isinstance(channel, discord.TextChannel):
+            logger.warning("Canal de serverlog inválido o no accesible en %s (%s)", guild.name, ch_id)
+            return
+
+        try:
+            await channel.send(embed=embed)
+        except discord.Forbidden:
+            logger.warning("Sin permisos para enviar serverlogs en %s", guild.name)
+        except discord.HTTPException as exc:
+            logger.warning("No se pudo enviar serverlog en %s: %s", guild.name, exc)
 
     # ─────────────────────────────────────────────────────────────────────
     # /serverinfo
@@ -70,6 +83,9 @@ class ServerUtils(commands.Cog):
     @app_commands.command(name="serverinfo", description="Información detallada del servidor")
     async def serverinfo(self, interaction: discord.Interaction):
         g = interaction.guild
+        if g is None:
+            return await interaction.response.send_message("❌ Este comando solo puede usarse en servidores.", ephemeral=True)
+
         await interaction.response.defer()
 
         created = int(g.created_at.timestamp())
@@ -131,6 +147,9 @@ class ServerUtils(commands.Cog):
     @app_commands.command(name="config", description="Panel de configuración global del bot")
     @app_commands.checks.has_permissions(administrator=True)
     async def config(self, interaction: discord.Interaction):
+        if interaction.guild is None:
+            return await interaction.response.send_message("❌ Este comando solo puede usarse en servidores.", ephemeral=True)
+
         srv = self.db.get_server_config(interaction.guild_id)
         embed = self._build_config_embed(interaction.guild, srv)
         view = GlobalConfigView(self, interaction.user.id)
@@ -177,7 +196,17 @@ class ServerUtils(commands.Cog):
     @config.error
     async def config_error(self, interaction: discord.Interaction, error):
         if isinstance(error, app_commands.MissingPermissions):
-            await interaction.response.send_message("❌ Solo administradores.", ephemeral=True)
+            msg = "❌ Solo administradores."
+        elif isinstance(error, app_commands.BotMissingPermissions):
+            msg = f"❌ Al bot le faltan permisos: `{', '.join(error.missing_permissions)}`"
+        else:
+            logger.error("Error en /config: %s", error, exc_info=True)
+            msg = "❌ Error inesperado. Revisa los logs del bot."
+
+        if not interaction.response.is_done():
+            await interaction.response.send_message(msg, ephemeral=True)
+        else:
+            await interaction.followup.send(msg, ephemeral=True)
 
     # ─────────────────────────────────────────────────────────────────────
     # /serverlogs — Configuración de eventos
@@ -186,6 +215,9 @@ class ServerUtils(commands.Cog):
     @app_commands.command(name="serverlogs", description="Configura los logs del servidor en tiempo real")
     @app_commands.checks.has_permissions(administrator=True)
     async def serverlogs(self, interaction: discord.Interaction):
+        if interaction.guild is None:
+            return await interaction.response.send_message("❌ Este comando solo puede usarse en servidores.", ephemeral=True)
+
         events = self._get_log_events(interaction.guild_id)
         srv = self.db.get_server_config(interaction.guild_id)
         embed = self._build_logs_embed(interaction.guild, srv, events)
@@ -211,6 +243,7 @@ class ServerUtils(commands.Cog):
             "voice_join_leave": "🔊 Voz: unión/salida",
             "role_changes": "🏷️ Cambios de roles",
             "nickname_changes": "📛 Cambios de nickname",
+            "channel_updates": "📝 Cambios en canales",
             "message_send": "💬 Cada mensaje enviado",
             "reactions": "😀 Reacciones",
         }
@@ -257,9 +290,12 @@ class ServerUtils(commands.Cog):
                 if not image_set and att.content_type and att.content_type.startswith("image"):
                     embed.set_image(url=att.url)
                     image_set = True
+            attachments_text = "\n".join(att_lines[:5])
+            if len(attachments_text) > 1024:
+                attachments_text = attachments_text[:1021] + "..."
             embed.add_field(
                 name=f"📎 Archivos adjuntos ({len(message.attachments)})",
-                value="\n".join(att_lines[:5]),
+                value=attachments_text,
                 inline=False,
             )
 
@@ -327,7 +363,10 @@ class ServerUtils(commands.Cog):
         )
         embed.set_thumbnail(url=member.display_avatar.url)
         if roles:
-            embed.add_field(name="Roles", value=", ".join(roles[:10]), inline=False)
+            roles_text = ", ".join(roles[:10])
+            if len(roles_text) > 1024:
+                roles_text = roles_text[:1021] + "..."
+            embed.add_field(name="Roles", value=roles_text, inline=False)
         embed.set_footer(text=f"ID: {member.id}")
         await self._send_server_log(member.guild, embed)
 
@@ -385,9 +424,15 @@ class ServerUtils(commands.Cog):
                     color=discord.Color.purple(), timestamp=datetime.now(timezone.utc),
                 )
                 if added:
-                    embed.add_field(name="➕ Añadidos", value=", ".join(r.mention for r in added), inline=False)
+                    added_text = ", ".join(r.mention for r in added)
+                    if len(added_text) > 1024:
+                        added_text = added_text[:1021] + "..."
+                    embed.add_field(name="➕ Añadidos", value=added_text, inline=False)
                 if removed:
-                    embed.add_field(name="➖ Removidos", value=", ".join(r.mention for r in removed), inline=False)
+                    removed_text = ", ".join(r.mention for r in removed)
+                    if len(removed_text) > 1024:
+                        removed_text = removed_text[:1021] + "..."
+                    embed.add_field(name="➖ Removidos", value=removed_text, inline=False)
                 embed.set_thumbnail(url=after.display_avatar.url)
                 embed.set_footer(text=f"ID Usuario: {after.id}")
                 await self._send_server_log(before.guild, embed)
@@ -575,6 +620,7 @@ class ServerLogsView(discord.ui.View):
             "voice_join_leave": "🔊 Voz: unión/salida",
             "role_changes": "🏷️ Cambios de roles",
             "nickname_changes": "📛 Cambios de nickname",
+            "channel_updates": "📝 Cambios en canales",
             "message_send": "💬 Cada mensaje enviado",
             "reactions": "😀 Reacciones",
         }

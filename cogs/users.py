@@ -29,20 +29,61 @@ class Users(commands.Cog):
         self.bot = bot
         self.db = bot.db  # type: ignore
 
+    def _validate_role_action(
+        self,
+        interaction: discord.Interaction,
+        usuario: discord.Member,
+        rol: discord.Role,
+    ) -> Optional[str]:
+        guild = interaction.guild
+        actor = interaction.user
+
+        if guild is None or not isinstance(actor, discord.Member):
+            return "Este comando solo puede usarse dentro de un servidor."
+        if rol == guild.default_role:
+            return "No puedes gestionar el rol @everyone."
+        if rol.managed:
+            return "Ese rol es gestionado por una integración y no puede modificarse manualmente."
+
+        bot_member = guild.me or guild.get_member(self.bot.user.id)
+        if bot_member is None:
+            return "No pude verificar mi jerarquía de roles."
+        if rol >= bot_member.top_role:
+            return "No puedo gestionar un rol igual o superior al mío."
+        if bot_member.top_role <= usuario.top_role:
+            return "Mi rol no es suficiente para gestionar a ese usuario."
+
+        if actor.id != guild.owner_id and rol >= actor.top_role:
+            return "No puedes gestionar un rol igual o superior al tuyo."
+        if actor.id != guild.owner_id and actor.top_role <= usuario.top_role:
+            return "Tu rol no es suficientemente alto para gestionar a ese usuario."
+
+        return None
+
     async def _check_user_perms(self, interaction: discord.Interaction, need_roles: bool = False) -> bool:
         """Verifica permisos del usuario según el módulo."""
         member = interaction.user
+        if interaction.guild is None or not isinstance(member, discord.Member):
+            await interaction.response.send_message(
+                "❌ Este comando solo puede usarse dentro de un servidor.",
+                ephemeral=True,
+            )
+            return False
+
         if member.guild_permissions.administrator:
             return True
         if need_roles and member.guild_permissions.manage_roles:
             return True
+
         srv_cfg = self.db.get_server_config(interaction.guild_id)
         role_id = srv_cfg.get("users_role_id")
         if role_id and any(r.id == role_id for r in member.roles):
             return True
+
         perm = "Gestionar Roles" if need_roles else "el rol de usuarios configurado"
         await interaction.response.send_message(
-            f"❌ Necesitas el permiso **{perm}** o ser administrador.", ephemeral=True,
+            f"❌ Necesitas el permiso **{perm}** o ser administrador.",
+            ephemeral=True,
         )
         return False
 
@@ -64,18 +105,24 @@ class Users(commands.Cog):
                 f"⚠️ {usuario.mention} ya tiene el rol {rol.mention}.", ephemeral=True
             )
 
-        # Verificar jerarquía
-        bot_member = interaction.guild.get_member(self.bot.user.id)
-        if rol >= bot_member.top_role:
-            return await interaction.response.send_message(
-                "❌ No puedo asignar un rol igual o superior al mío.", ephemeral=True
-            )
-        if rol >= interaction.user.top_role and interaction.user.id != interaction.guild.owner_id:
-            return await interaction.response.send_message(
-                "❌ No puedes asignar un rol igual o superior al tuyo.", ephemeral=True
-            )
+        err = self._validate_role_action(interaction, usuario, rol)
+        if err:
+            return await interaction.response.send_message(f"❌ {err}", ephemeral=True)
 
-        await usuario.add_roles(rol, reason=f"Añadido por {interaction.user}")
+        try:
+            await usuario.add_roles(rol, reason=f"Añadido por {interaction.user}")
+        except discord.Forbidden:
+            logger.warning("Sin permisos para añadir rol %s a %s en %s", rol.id, usuario.id, interaction.guild)
+            return await interaction.response.send_message(
+                "❌ No tengo permisos para añadir ese rol.",
+                ephemeral=True,
+            )
+        except discord.HTTPException as exc:
+            logger.warning("Error añadiendo rol %s a %s en %s: %s", rol.id, usuario.id, interaction.guild, exc)
+            return await interaction.response.send_message(
+                "❌ No se pudo añadir el rol. Inténtalo de nuevo.",
+                ephemeral=True,
+            )
         embed = discord.Embed(
             title="✅ Rol añadido",
             description=f"Se añadió {rol.mention} a {usuario.mention}.",
@@ -103,13 +150,24 @@ class Users(commands.Cog):
                 f"⚠️ {usuario.mention} no tiene el rol {rol.mention}.", ephemeral=True
             )
 
-        bot_member = interaction.guild.get_member(self.bot.user.id)
-        if rol >= bot_member.top_role:
-            return await interaction.response.send_message(
-                "❌ No puedo quitar un rol igual o superior al mío.", ephemeral=True
-            )
+        err = self._validate_role_action(interaction, usuario, rol)
+        if err:
+            return await interaction.response.send_message(f"❌ {err}", ephemeral=True)
 
-        await usuario.remove_roles(rol, reason=f"Removido por {interaction.user}")
+        try:
+            await usuario.remove_roles(rol, reason=f"Removido por {interaction.user}")
+        except discord.Forbidden:
+            logger.warning("Sin permisos para quitar rol %s a %s en %s", rol.id, usuario.id, interaction.guild)
+            return await interaction.response.send_message(
+                "❌ No tengo permisos para quitar ese rol.",
+                ephemeral=True,
+            )
+        except discord.HTTPException as exc:
+            logger.warning("Error quitando rol %s a %s en %s: %s", rol.id, usuario.id, interaction.guild, exc)
+            return await interaction.response.send_message(
+                "❌ No se pudo quitar el rol. Inténtalo de nuevo.",
+                ephemeral=True,
+            )
         embed = discord.Embed(
             title="✅ Rol removido",
             description=f"Se quitó {rol.mention} de {usuario.mention}.",
@@ -184,6 +242,9 @@ class Users(commands.Cog):
         usuario: Optional[discord.Member] = None,
     ):
         target = usuario or interaction.user
+        if interaction.guild is None or not isinstance(target, discord.Member):
+            return await interaction.response.send_message("❌ Este comando solo puede usarse en servidores.", ephemeral=True)
+
         await interaction.response.defer()
 
         created = int(target.created_at.timestamp())
@@ -197,8 +258,9 @@ class Users(commands.Cog):
 
         # ── Identidad ─────────────────────────────────────────────────────
         embed.set_thumbnail(url=target.display_avatar.url)
-        if target.banner:
-            embed.set_image(url=target.banner.url)
+        banner = getattr(target, "banner", None)
+        if banner:
+            embed.set_image(url=banner.url)
 
         embed.add_field(name="📛 Usuario", value=f"{target.mention}\n`{target}`", inline=True)
         embed.add_field(name="🆔 ID", value=f"`{target.id}`", inline=True)
@@ -313,22 +375,35 @@ class Users(commands.Cog):
         if not await self._check_user_perms(interaction):
             return
 
+        guild = interaction.guild
+        if guild is None:
+            return await interaction.response.send_message("❌ Este comando solo puede usarse en servidores.", ephemeral=True)
+
         await interaction.response.defer(ephemeral=True)
 
-        # Recolectar mensajes de TODOS los canales antes de ordenar
         all_messages = []
-        scan_limit = max(cantidad * 3, 100)  # Escanear suficiente por canal
+        scan_limit = max(cantidad * 3, 100)
+        bot_member = guild.me or guild.get_member(self.bot.user.id)
 
-        for channel in interaction.guild.text_channels:
+        if bot_member is None:
+            return await interaction.followup.send(
+                "❌ No pude verificar mis permisos en este servidor.",
+                ephemeral=True,
+            )
+
+        for channel in guild.text_channels:
             try:
-                perms = channel.permissions_for(interaction.guild.me)
-                if not perms.read_message_history:
+                perms = channel.permissions_for(bot_member)
+                if not perms.view_channel or not perms.read_message_history:
                     continue
+
                 async for msg in channel.history(limit=scan_limit):
                     if msg.author.id == usuario.id:
                         all_messages.append(msg)
-            except (discord.Forbidden, discord.HTTPException):
-                continue
+            except discord.Forbidden:
+                logger.debug("Sin permisos para leer historial en canal %s", channel.id)
+            except discord.HTTPException as exc:
+                logger.debug("Error leyendo historial en canal %s: %s", channel.id, exc)
 
         if not all_messages:
             return await interaction.followup.send(
