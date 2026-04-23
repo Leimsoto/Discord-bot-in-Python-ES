@@ -1720,6 +1720,9 @@ class DatabaseManager:
     def get_autorole(self, message_id: int) -> Optional[Dict]:
         return self._fetchone("SELECT * FROM autoroles WHERE message_id = ?", (message_id,))
 
+    def get_guild_autoroles(self, guild_id: int) -> List[Dict]:
+        return self._fetchall("SELECT * FROM autoroles WHERE guild_id = ?", (guild_id,))
+
     def delete_autorole(self, message_id: int) -> None:
         self._execute("DELETE FROM autoroles WHERE message_id = ?", (message_id,))
 

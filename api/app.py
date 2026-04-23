@@ -65,6 +65,10 @@ def create_app(db=None) -> FastAPI:
         reports,
         schedules,
         giveaways,
+        autoroles,
+        radio,
+        embeds,
+        channels,
     )
 
     app.include_router(guild.router)
@@ -75,6 +79,10 @@ def create_app(db=None) -> FastAPI:
     app.include_router(reports.router)
     app.include_router(schedules.router)
     app.include_router(giveaways.router)
+    app.include_router(autoroles.router)
+    app.include_router(radio.router)
+    app.include_router(embeds.router)
+    app.include_router(channels.router)
 
     # ── Registrar auth ────────────────────────────────────────────────────────
     from api.auth import router as auth_router
