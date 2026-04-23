@@ -2008,3 +2008,68 @@ class DatabaseManager:
     def get_level_reward(self, guild_id: int, level: int) -> Optional[Dict]:
         return self._fetchone("SELECT * FROM level_rewards WHERE guild_id = ? AND level = ?", (guild_id, level))
 
+    # ── Web Panel helpers ─────────────────────────────────────────────────────
+
+    def get_user_rank(self, user_id: int, guild_id: int) -> int:
+        """Retorna la posición del usuario en el leaderboard (1-indexed). 0 si no tiene XP."""
+        row = self._fetchone(
+            "SELECT COUNT(*) + 1 AS rank FROM user_levels "
+            "WHERE guild_id = ? AND xp > (SELECT COALESCE(xp, 0) FROM user_levels WHERE user_id = ? AND guild_id = ?)",
+            (guild_id, user_id, guild_id),
+        )
+        if row:
+            return int(row["rank"])
+        return 0
+
+    def count_all_open_tickets(self) -> int:
+        """Cuenta todos los tickets abiertos en todos los servidores."""
+        row = self._fetchone("SELECT COUNT(*) AS cnt FROM tickets WHERE status = 'OPEN'", ())
+        return int(row["cnt"]) if row else 0
+
+    def count_open_tickets_by_guild(self, guild_id: int) -> int:
+        """Cuenta tickets abiertos de un servidor específico."""
+        row = self._fetchone(
+            "SELECT COUNT(*) AS cnt FROM tickets WHERE guild_id = ? AND status = 'OPEN'",
+            (guild_id,),
+        )
+        return int(row["cnt"]) if row else 0
+
+    def get_all_tickets(self, guild_id: int, status: Optional[str] = None,
+                        limit: int = 50, offset: int = 0) -> List[Dict]:
+        """Retorna tickets de un servidor con paginación y filtro opcional."""
+        if status:
+            return self._fetchall(
+                "SELECT * FROM tickets WHERE guild_id = ? AND status = ? "
+                "ORDER BY id DESC LIMIT ? OFFSET ?",
+                (guild_id, status, limit, offset),
+            )
+        return self._fetchall(
+            "SELECT * FROM tickets WHERE guild_id = ? ORDER BY id DESC LIMIT ? OFFSET ?",
+            (guild_id, limit, offset),
+        )
+
+    def get_guild_giveaways(self, guild_id: int, active_only: bool = True) -> List[Dict]:
+        """Retorna sorteos de un servidor, opcionalmente solo activos."""
+        if active_only:
+            return self._fetchall(
+                "SELECT * FROM giveaways WHERE guild_id = ? AND ended = 0 ORDER BY end_time ASC",
+                (guild_id,),
+            )
+        return self._fetchall(
+            "SELECT * FROM giveaways WHERE guild_id = ? ORDER BY id DESC",
+            (guild_id,),
+        )
+
+    def get_mod_actions(self, guild_id: int, limit: int = 50, offset: int = 0) -> List[Dict]:
+        """Retorna acciones de moderación de un servidor con paginación."""
+        return self._fetchall(
+            "SELECT * FROM mod_actions WHERE guild_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            (guild_id, limit, offset),
+        )
+
+    def get_users_with_warns(self, guild_id: int) -> List[Dict]:
+        """Retorna usuarios con warns activos en un servidor."""
+        return self._fetchall(
+            "SELECT * FROM user_records WHERE guild_id = ? AND warns > 0 ORDER BY warns DESC",
+            (guild_id,),
+        )

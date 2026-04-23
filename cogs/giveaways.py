@@ -100,8 +100,9 @@ class Giveaways(commands.Cog):
                 
             winners_ids = random.sample(parts, min(len(parts), winners_count))
             winners_mentions = ", ".join(f"<@{w}>" for w in winners_ids)
-            plural = "es" if len(winners_ids) > 1 else ""
-            await channel.send(f"🎉 ¡Felicidades {winners_mentions}! Han{'' if len(winners_ids) > 1 else 's'} ganado **{gw['prize']}**.")            
+            plural = len(winners_ids) > 1
+            verb = "Han" if plural else "Has"
+            await channel.send(f"🎉 ¡Felicidades {winners_mentions}! ¡{verb} ganado **{gw['prize']}**!")            
 
             
             embed = msg.embeds[0]

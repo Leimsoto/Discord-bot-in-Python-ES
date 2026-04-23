@@ -87,7 +87,10 @@ class Reports(commands.Cog):
         srv_cfg = self.db.get_server_config(member.guild.id)
         mod_role = srv_cfg.get("mod_role_id")
         staff_role = srv_cfg.get("staff_role_id")
-        return any(r.id in (mod_role, staff_role) for r in member.roles if mod_role or staff_role)
+        check_ids = {rid for rid in (mod_role, staff_role) if rid}
+        if not check_ids:
+            return False
+        return any(r.id in check_ids for r in member.roles)
 
     async def _send_to_modlog(self, guild: discord.Guild, embed: discord.Embed, report_id: int) -> None:
         """Envía el embed al canal de modlog si está configurado."""

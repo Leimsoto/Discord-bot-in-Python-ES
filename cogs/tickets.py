@@ -76,8 +76,9 @@ class TicketTakeCloseView(discord.ui.View):
 
     @discord.ui.button(label="Tomar Ticket", emoji="🙋‍♂️", style=discord.ButtonStyle.primary, custom_id="ticket_take")
     async def take_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        ticket = self.cog.db.get_ticket(self.ticket_id)
+        ticket = self.cog.db.get_ticket_by_channel(interaction.channel.id)
         if not ticket: return await interaction.response.send_message("Ticket no encontrado.", ephemeral=True)
+        ticket_id = ticket["id"]
         
         if ticket["staff_id"]:
             return await interaction.response.send_message("❌ Este ticket ya fue tomado por otro staff.", ephemeral=True)
@@ -90,7 +91,7 @@ class TicketTakeCloseView(discord.ui.View):
         if not (interaction.user.guild_permissions.administrator or any(r in user_roles for r in allowed_roles) or any(r in user_roles for r in json.loads(config.get("immune_roles", "[]")))):
             return await interaction.response.send_message("❌ No tienes permiso para tomar tickets.", ephemeral=True)
 
-        self.cog.db.update_ticket(self.ticket_id, staff_id=interaction.user.id)
+        self.cog.db.update_ticket(ticket_id, staff_id=interaction.user.id)
         
         # Quitar escritura a allowed_roles, dejar a immune_roles y dar a este staff
         channel = interaction.channel
@@ -112,8 +113,9 @@ class TicketTakeCloseView(discord.ui.View):
 
     @discord.ui.button(label="Cerrar", emoji="🔒", style=discord.ButtonStyle.danger, custom_id="ticket_close")
     async def close_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        ticket = self.cog.db.get_ticket(self.ticket_id)
+        ticket = self.cog.db.get_ticket_by_channel(interaction.channel.id)
         if not ticket: return await interaction.response.send_message("Ticket no encontrado.", ephemeral=True)
+        ticket_id = ticket["id"]
         
         config = self.cog.db.get_ticket_config(interaction.guild_id)
         immune_roles = json.loads(config.get("immune_roles", "[]"))
@@ -265,7 +267,6 @@ class Tickets(commands.Cog):
         if cooldown_secs > 0:
             last_str = self.db.get_last_ticket_time(guild.id, interaction.user.id)
             if last_str:
-                from datetime import datetime, timezone
                 last_dt = datetime.fromisoformat(last_str)
                 now_dt = datetime.now(timezone.utc)
                 elapsed = (now_dt - last_dt).total_seconds()

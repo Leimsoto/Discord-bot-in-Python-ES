@@ -11,20 +11,20 @@ logger = logging.getLogger(__name__)
 LOFI_STREAM_URL = "http://lofi.stream.laut.fm/lofi"
 RADIO_API_URL = "http://de1.api.radio-browser.info/json/stations/search"
 
-class LofiRadio(commands.Cog):
-    """Módulo de Radio Global y Lofi 24/7"""
+class Radio(commands.Cog):
+    """Módulo de Radio Global 24/7 con búsqueda de emisoras."""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.db = bot.db # type: ignore
         self._playback_wait = 1.0  # segundos a esperar tras parar una reproducción
-        self.lofi_manager.start()
+        self.radio_manager.start()
 
     def cog_unload(self):
-        self.lofi_manager.cancel()
+        self.radio_manager.cancel()
 
     @tasks.loop(seconds=60)
-    async def lofi_manager(self):
+    async def radio_manager(self):
         for guild in self.bot.guilds:
             cfg = self.db.get_lofi_config(guild.id)
             if not cfg.get("enabled"):
@@ -59,8 +59,8 @@ class LofiRadio(commands.Cog):
             if not vc.is_playing():
                 self.start_playing(vc, channel, cfg)
 
-    @lofi_manager.before_loop
-    async def before_lofi_manager(self):
+    @radio_manager.before_loop
+    async def before_radio_manager(self):
         await self.bot.wait_until_ready()
 
     def start_playing(self, vc, channel, cfg):
@@ -84,13 +84,9 @@ class LofiRadio(commands.Cog):
                 # Re-leer config desde DB para tener el estado más actualizado
                 current_cfg = self.db.get_lofi_config(channel.guild.id)
                 if current_cfg.get("enabled"):
-                    fut = asyncio.run_coroutine_threadsafe(
+                    asyncio.run_coroutine_threadsafe(
                         self.reconnect_stream(vc, channel, current_cfg), self.bot.loop
                     )
-                    try:
-                        fut.result(timeout=10)
-                    except Exception as e:
-                        logger.warning(f"Error en after_playback al programar reconexión: {e}")
 
             vc.play(audio_source, after=after_playback)
 
@@ -133,7 +129,7 @@ class LofiRadio(commands.Cog):
 
     radio_group = app_commands.Group(
         name="radio",
-        description="Configuración de Radio y Lofi 24/7",
+        description="Configuración de Radio 24/7",
         default_member_permissions=discord.Permissions(administrator=True),
     )
 
@@ -341,4 +337,4 @@ class LofiRadio(commands.Cog):
 
 
 async def setup(bot: commands.Bot):
-    await bot.add_cog(LofiRadio(bot))
+    await bot.add_cog(Radio(bot))

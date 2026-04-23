@@ -18,7 +18,7 @@ from discord.ext import commands
 from dotenv import load_dotenv
 
 from database import DatabaseManager
-from mantener_vivo import mantener_vivo
+from api import iniciar_api
 
 # ── Cargar .env antes de cualquier otra inicialización ───────────────────────
 load_dotenv()
@@ -81,11 +81,11 @@ class TortuguBot(commands.Bot):
             
             uptime_seconds = int((discord.utils.utcnow() - self.start_time).total_seconds())
             
-            # Count open tickets
+            # Count open tickets (método público)
             open_tickets = 0
             if hasattr(self, 'db'):
                 try:
-                    open_tickets = len(self.db._fetchall("SELECT id FROM tickets WHERE status = 'OPEN'", ()))
+                    open_tickets = self.db.count_all_open_tickets()
                 except Exception:
                     pass
                 self.db.update_bot_stats(members_online, total_members, open_tickets, uptime_seconds)
@@ -108,7 +108,7 @@ class TortuguBot(commands.Bot):
             "cogs.suggestions",
             "cogs.giveaways",
             "cogs.autoroles",
-            "cogs.lofi",
+            "cogs.radio",
             "cogs.tickets",
             # ── Nuevos módulos ──
             "cogs.tags",
@@ -177,9 +177,9 @@ def main() -> None:
         logger.critical("TOKEN no encontrado en el archivo .env")
         raise SystemExit(1)
 
-    mantener_vivo()
-
     bot = TortuguBot()
+    iniciar_api(db=bot.db)
+
     try:
         bot.run(token, log_handler=None)  # log_handler=None para usar nuestro logging
     except discord.LoginFailure:
