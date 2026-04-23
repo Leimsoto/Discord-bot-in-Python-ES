@@ -182,7 +182,11 @@ class Scheduler(commands.Cog):
 
     # ── Comandos ──────────────────────────────────────────────────────────────
 
-    schedule_group = app_commands.Group(name="schedule", description="Mensajes programados periódicos")
+    schedule_group = app_commands.Group(
+        name="schedule",
+        description="Mensajes programados periódicos",
+        default_member_permissions=discord.Permissions(administrator=True),
+    )
 
     @schedule_group.command(name="create", description="Crea un mensaje programado que se enviará automáticamente")
     @app_commands.describe(canal="Canal donde se enviará el mensaje")

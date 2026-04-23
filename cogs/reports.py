@@ -189,7 +189,11 @@ class Reports(commands.Cog):
             ephemeral=True,
         )
 
-    reports_group = app_commands.Group(name="reports", description="Gestión de reportes [staff]")
+    reports_group = app_commands.Group(
+        name="reports",
+        description="Gestión de reportes [staff]",
+        default_member_permissions=discord.Permissions(manage_guild=True),
+    )
 
     @reports_group.command(name="list", description="Lista reportes del servidor")
     @app_commands.describe(estado="Filtrar por estado")

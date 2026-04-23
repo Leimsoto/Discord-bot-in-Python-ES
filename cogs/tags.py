@@ -154,6 +154,7 @@ class Tags(commands.Cog):
         await interaction.response.send_message(tag["content"])
 
     @tag_group.command(name="create", description="Crea un nuevo tag del servidor")
+    @app_commands.default_permissions(manage_messages=True)
     async def tag_create(self, interaction: discord.Interaction):
         if not _can_manage(interaction.user):
             return await interaction.response.send_message(
@@ -162,6 +163,7 @@ class Tags(commands.Cog):
         await interaction.response.send_modal(TagCreateModal(self))
 
     @tag_group.command(name="edit", description="Edita el contenido de un tag existente")
+    @app_commands.default_permissions(manage_messages=True)
     @app_commands.describe(nombre="Nombre del tag a editar")
     @app_commands.autocomplete(nombre=_tag_autocomplete)
     async def tag_edit(self, interaction: discord.Interaction, nombre: str):
@@ -177,6 +179,7 @@ class Tags(commands.Cog):
         await interaction.response.send_modal(TagEditModal(self, nombre.lower(), tag["content"]))
 
     @tag_group.command(name="delete", description="Elimina un tag del servidor")
+    @app_commands.default_permissions(manage_messages=True)
     @app_commands.describe(nombre="Nombre del tag a eliminar")
     @app_commands.autocomplete(nombre=_tag_autocomplete)
     async def tag_delete(self, interaction: discord.Interaction, nombre: str):

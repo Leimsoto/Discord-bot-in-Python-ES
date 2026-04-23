@@ -117,6 +117,7 @@ class Giveaways(commands.Cog):
             logger.error(f"Error terminando sorteo: {e}")
 
     @app_commands.command(name="giveaway", description="Crea un sorteo interactivo")
+    @app_commands.default_permissions(administrator=True)
     @app_commands.describe(
         premio="Qué se va a sortear", 
         duracion_horas="Duración en horas", 
@@ -172,6 +173,7 @@ class Giveaways(commands.Cog):
     # ── Comandos de gestión ──────────────────────────────────────────────────
 
     @app_commands.command(name="giveaway_end", description="Termina un sorteo activo inmediatamente y elige ganadores")
+    @app_commands.default_permissions(administrator=True)
     @app_commands.describe(id_mensaje="ID del mensaje del sorteo")
     @app_commands.checks.has_permissions(administrator=True)
     async def giveaway_end(self, interaction: discord.Interaction, id_mensaje: str):
@@ -191,6 +193,7 @@ class Giveaways(commands.Cog):
         await interaction.followup.send("✅ Sorteo terminado y ganadores elegidos.", ephemeral=True)
 
     @app_commands.command(name="giveaway_cancel", description="Cancela un sorteo sin elegir ganadores")
+    @app_commands.default_permissions(administrator=True)
     @app_commands.describe(id_mensaje="ID del mensaje del sorteo")
     @app_commands.checks.has_permissions(administrator=True)
     async def giveaway_cancel(self, interaction: discord.Interaction, id_mensaje: str):
@@ -225,6 +228,7 @@ class Giveaways(commands.Cog):
         await interaction.followup.send("✅ Sorteo cancelado sin elegir ganadores.", ephemeral=True)
 
     @app_commands.command(name="giveaway_reroll", description="Vuelve a elegir ganadores de un sorteo ya terminado")
+    @app_commands.default_permissions(administrator=True)
     @app_commands.describe(id_mensaje="ID del mensaje del sorteo")
     @app_commands.checks.has_permissions(administrator=True)
     async def giveaway_reroll(self, interaction: discord.Interaction, id_mensaje: str):

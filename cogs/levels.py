@@ -337,8 +337,16 @@ class Levels(commands.Cog):
         embed.set_footer(text="Actualizado al momento de ejecutar el comando")
         await interaction.followup.send(embed=embed)
 
-    xp_group = app_commands.Group(name="xp", description="Gestión del sistema XP")
-    xp_reward_group = app_commands.Group(name="reward", description="Recompensas de nivel", parent=xp_group)
+    xp_group = app_commands.Group(
+        name="xp",
+        description="Gestión del sistema XP",
+        default_member_permissions=discord.Permissions(administrator=True),
+    )
+    xp_reward_group = app_commands.Group(
+        name="reward",
+        description="Recompensas de nivel",
+        parent=xp_group,
+    )
 
     @xp_group.command(name="give", description="[Admin] Da XP a un usuario")
     @app_commands.describe(usuario="Usuario al que dar XP", cantidad="Cantidad de XP a dar")

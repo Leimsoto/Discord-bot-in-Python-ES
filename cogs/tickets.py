@@ -443,7 +443,11 @@ class Tickets(commands.Cog):
                 await log_ch.send(f"👥 **Usuario añadido:** {usuario.mention} fue añadido al ticket #{ticket['global_number']} por {interaction.user.mention}.")
 
     # --- Setup Commands ---
-    ticket_group = app_commands.Group(name="tickets", description="Gestión de Tickets")
+    ticket_group = app_commands.Group(
+        name="tickets",
+        description="Gestión de Tickets",
+        default_member_permissions=discord.Permissions(administrator=True),
+    )
 
     @ticket_group.command(name="setup", description="Configura los canales y roles del sistema de tickets")
     @app_commands.describe(

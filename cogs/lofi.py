@@ -131,7 +131,11 @@ class LofiRadio(commands.Cog):
         if vc and vc.is_connected() and not vc.is_playing() and cfg.get("enabled"):
             self.start_playing(vc, channel, cfg)
 
-    radio_group = app_commands.Group(name="radio", description="Configuración de Radio y Lofi 24/7")
+    radio_group = app_commands.Group(
+        name="radio",
+        description="Configuración de Radio y Lofi 24/7",
+        default_member_permissions=discord.Permissions(administrator=True),
+    )
 
     @radio_group.command(name="setup", description="Configura una estación de radio 24/7 en un canal de voz")
     @app_commands.describe(
