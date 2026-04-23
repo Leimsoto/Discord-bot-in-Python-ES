@@ -65,13 +65,16 @@ class Giveaways(commands.Cog):
 
     @tasks.loop(seconds=30)
     async def giveaway_checker(self):
-        await self.bot.wait_until_ready()
         active = self.db.get_active_giveaways()
         now = int(datetime.now(timezone.utc).timestamp())
         
         for gw in active:
             if now >= gw["end_time"]:
                 await self.end_giveaway(gw)
+
+    @giveaway_checker.before_loop
+    async def before_giveaway_checker(self):
+        await self.bot.wait_until_ready()
 
     async def end_giveaway(self, gw: dict):
         self.db.update_giveaway(gw["message_id"], ended=1)
@@ -97,8 +100,9 @@ class Giveaways(commands.Cog):
                 
             winners_ids = random.sample(parts, min(len(parts), winners_count))
             winners_mentions = ", ".join(f"<@{w}>" for w in winners_ids)
-            
-            await channel.send(f"🎉 ¡Felicidades {winners_mentions}! Has ganado **{gw['prize']}**.")
+            plural = "es" if len(winners_ids) > 1 else ""
+            await channel.send(f"🎉 ¡Felicidades {winners_mentions}! Han{'' if len(winners_ids) > 1 else 's'} ganado **{gw['prize']}**.")            
+
             
             embed = msg.embeds[0]
             embed.color = discord.Color.dark_grey()
@@ -165,5 +169,124 @@ class Giveaways(commands.Cog):
         view = GiveawayJoinView(self, msg.id)
         await msg.edit(view=view)
 
+    # ── Comandos de gestión ──────────────────────────────────────────────────
+
+    @app_commands.command(name="giveaway_end", description="Termina un sorteo activo inmediatamente y elige ganadores")
+    @app_commands.describe(id_mensaje="ID del mensaje del sorteo")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def giveaway_end(self, interaction: discord.Interaction, id_mensaje: str):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            msg_id = int(id_mensaje)
+        except ValueError:
+            return await interaction.followup.send("❌ El ID debe ser un número.", ephemeral=True)
+
+        gw = self.db.get_giveaway(msg_id)
+        if not gw or int(gw["guild_id"]) != interaction.guild_id:
+            return await interaction.followup.send("❌ No se encontró ningún sorteo con ese ID en este servidor.", ephemeral=True)
+        if gw["ended"]:
+            return await interaction.followup.send("⚠️ Este sorteo ya ha finalizado.", ephemeral=True)
+
+        await self.end_giveaway(gw)
+        await interaction.followup.send("✅ Sorteo terminado y ganadores elegidos.", ephemeral=True)
+
+    @app_commands.command(name="giveaway_cancel", description="Cancela un sorteo sin elegir ganadores")
+    @app_commands.describe(id_mensaje="ID del mensaje del sorteo")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def giveaway_cancel(self, interaction: discord.Interaction, id_mensaje: str):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            msg_id = int(id_mensaje)
+        except ValueError:
+            return await interaction.followup.send("❌ El ID debe ser un número.", ephemeral=True)
+
+        gw = self.db.get_giveaway(msg_id)
+        if not gw or int(gw["guild_id"]) != interaction.guild_id:
+            return await interaction.followup.send("❌ No se encontró ningún sorteo con ese ID en este servidor.", ephemeral=True)
+        if gw["ended"]:
+            return await interaction.followup.send("⚠️ Este sorteo ya ha finalizado o fue cancelado.", ephemeral=True)
+
+        self.db.update_giveaway(msg_id, ended=1)
+        guild = self.bot.get_guild(int(gw["guild_id"]))
+        if guild:
+            channel = guild.get_channel(int(gw["channel_id"]))
+            if channel:
+                try:
+                    msg = await channel.fetch_message(msg_id)
+                    embed = msg.embeds[0]
+                    embed.color = discord.Color.dark_grey()
+                    embed.set_footer(text="Sorteo Cancelado")
+                    embed.description = (embed.description or "") + "\n\n🚫 **Sorteo cancelado por un administrador.**"
+                    view = GiveawayJoinView(self, msg_id)
+                    view.children[0].disabled = True
+                    await msg.edit(embed=embed, view=view)
+                except Exception:
+                    pass
+        await interaction.followup.send("✅ Sorteo cancelado sin elegir ganadores.", ephemeral=True)
+
+    @app_commands.command(name="giveaway_reroll", description="Vuelve a elegir ganadores de un sorteo ya terminado")
+    @app_commands.describe(id_mensaje="ID del mensaje del sorteo")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def giveaway_reroll(self, interaction: discord.Interaction, id_mensaje: str):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            msg_id = int(id_mensaje)
+        except ValueError:
+            return await interaction.followup.send("❌ El ID debe ser un número.", ephemeral=True)
+
+        gw = self.db.get_giveaway(msg_id)
+        if not gw or int(gw["guild_id"]) != interaction.guild_id:
+            return await interaction.followup.send("❌ No se encontró ningún sorteo con ese ID.", ephemeral=True)
+        if not gw["ended"]:
+            return await interaction.followup.send("⚠️ El sorteo aún está activo. Términalo primero con `/giveaway_end`.", ephemeral=True)
+
+        parts = json.loads(gw["participants"])
+        if not parts:
+            return await interaction.followup.send("❌ No hubo participantes en este sorteo.", ephemeral=True)
+
+        winners_count = int(gw["winners_count"])
+        winners_ids = random.sample(parts, min(len(parts), winners_count))
+        winners_mentions = ", ".join(f"<@{w}>" for w in winners_ids)
+
+        channel = interaction.guild.get_channel(int(gw["channel_id"]))
+        if channel:
+            await channel.send(
+                f"🎉 **Reroll!** ¡Nuevos ganadores de **{gw['prize']}**: {winners_mentions}!"
+            )
+        await interaction.followup.send("✅ Nuevos ganadores elegidos y anunciados.", ephemeral=True)
+
+    @app_commands.command(name="giveaway_list", description="Lista los sorteos activos en este servidor")
+    async def giveaway_list(self, interaction: discord.Interaction):
+        active = self.db.get_active_giveaways()
+        guild_gws = [g for g in active if int(g["guild_id"]) == interaction.guild_id]
+
+        if not guild_gws:
+            return await interaction.response.send_message("📫 No hay sorteos activos en este servidor.", ephemeral=True)
+
+        embed = discord.Embed(
+            title="🎁 Sorteos Activos",
+            color=discord.Color.purple(),
+            timestamp=datetime.now(timezone.utc),
+        )
+        for gw in guild_gws:
+            parts = json.loads(gw["participants"])
+            end_ts = int(gw["end_time"])
+            embed.add_field(
+                name=f"🎁 {gw['prize']}",
+                value=(
+                    f"Participantes: **{len(parts)}**\n"
+                    f"Ganadores: **{gw['winners_count']}**\n"
+                    f"Finaliza: <t:{end_ts}:R>\n"
+                    f"ID mensaje: `{gw['message_id']}`"
+                ),
+                inline=True,
+            )
+        embed.set_footer(text="Usa /giveaway_end <id> para terminar uno antes de tiempo")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
 async def setup(bot: commands.Bot):
-    await bot.add_cog(Giveaways(bot))
+    cog = Giveaways(bot)
+    await bot.add_cog(cog)
+    # Registrar vista persistente para que los botones de sorteos sobrevivan reinicios
+    bot.add_view(GiveawayJoinView(cog, 0))  # custom_id="gw_join", message_id se verifica en DB
+

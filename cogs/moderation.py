@@ -1423,22 +1423,55 @@ class AppealDenyModal(discord.ui.Modal, title="Denegar Apelación"):
 
 
 class AppealModView(discord.ui.View):
-    def __init__(self, bot: commands.Bot, appeal_id: int, user_id: int, action_type: str):
+    def __init__(self, bot: commands.Bot, appeal_id: int = 0, user_id: int = 0, action_type: str = "UNKNOWN"):
         super().__init__(timeout=None)
         self.bot = bot
         self.appeal_id = appeal_id
         self.user_id = user_id
         self.action_type = action_type
 
-    @discord.ui.button(label="Aceptar", style=discord.ButtonStyle.success, emoji="✅")
-    async def accept_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(AppealAcceptModal(self.bot, self.appeal_id, self.user_id, self.action_type))
+    @staticmethod
+    def _parse_embed(interaction: discord.Interaction) -> tuple:
+        """Extrae (appeal_id, user_id, action_type) del embed del mensaje."""
+        appeal_id, user_id, action_type = 0, 0, "UNKNOWN"
+        if not (interaction.message and interaction.message.embeds):
+            return appeal_id, user_id, action_type
+        embed = interaction.message.embeds[0]
+        # Footer: "ID Apelación: N"
+        if embed.footer and embed.footer.text:
+            try:
+                appeal_id = int(embed.footer.text.split("ID Apelación:")[-1].strip())
+            except (ValueError, IndexError):
+                pass
+        for field in embed.fields:
+            if field.name == "Sanción":
+                action_type = field.value or "UNKNOWN"
+            elif field.name == "Usuario" and field.value:
+                # Formato: "mención (`ID`)"
+                try:
+                    user_id = int(field.value.split("`")[1])
+                except (IndexError, ValueError):
+                    pass
+        return appeal_id, user_id, action_type
 
-    @discord.ui.button(label="Denegar", style=discord.ButtonStyle.danger, emoji="❌")
+    @discord.ui.button(label="Aceptar", style=discord.ButtonStyle.success, emoji="✅", custom_id="appeal_accept")
+    async def accept_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        appeal_id, user_id, action_type = self._parse_embed(interaction)
+        if not appeal_id:
+            appeal_id, user_id, action_type = self.appeal_id, self.user_id, self.action_type
+        await interaction.response.send_modal(AppealAcceptModal(self.bot, appeal_id, user_id, action_type))
+
+    @discord.ui.button(label="Denegar", style=discord.ButtonStyle.danger, emoji="❌", custom_id="appeal_deny")
     async def deny_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(AppealDenyModal(self.bot, self.appeal_id, self.user_id, self.action_type))
+        appeal_id, user_id, action_type = self._parse_embed(interaction)
+        if not appeal_id:
+            appeal_id, user_id, action_type = self.appeal_id, self.user_id, self.action_type
+        await interaction.response.send_modal(AppealDenyModal(self.bot, appeal_id, user_id, action_type))
 
 
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Moderation(bot))
+    # Registrar AppealModView como vista persistente (botones con custom_id fijos)
+    # Los datos del appeal se extraen del embed al interactuar
+    bot.add_view(AppealModView(bot))

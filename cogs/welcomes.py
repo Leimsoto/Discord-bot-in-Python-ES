@@ -74,17 +74,17 @@ class Welcomes(commands.Cog):
                 desc = data.get("description", "").replace("{user}", member.mention).replace("{server}", guild.name)
                 if inviter:
                     desc += f"\n\n💌 Invitado por: {inviter.mention}"
-                
-                    embed = discord.Embed(
-                        title=title or None,
-                        description=desc or None,
-                        color=discord.Color(data.get("color", 0x5865F2)),
-                        timestamp=datetime.now(timezone.utc) if data.get("timestamp") else None
-                    )
+
+                embed = discord.Embed(
+                    title=title or None,
+                    description=desc or None,
+                    color=discord.Color(data.get("color", 0x5865F2)),
+                    timestamp=datetime.now(timezone.utc) if data.get("timestamp") else None
+                )
                 if data.get("image_url"): embed.set_image(url=data.get("image_url"))
                 if data.get("thumbnail_url"): embed.set_thumbnail(url=member.display_avatar.url)
                 if data.get("footer_text"): embed.set_footer(text=data.get("footer_text"), icon_url=data.get("footer_icon"))
-                
+
                 await channel.send(content=member.mention, embed=embed)
             except Exception as e:
                 logger.error(f"Error al enviar bienvenida: {e}")

@@ -190,31 +190,42 @@ class TicketModal(discord.ui.Modal):
 
 
 class TicketPanelView(discord.ui.View):
-    def __init__(self, cog, categories):
+    def __init__(self, cog, categories=None):
         super().__init__(timeout=None)
         self.cog = cog
-        
-        options = []
-        for cat in categories:
-            options.append(discord.SelectOption(
-                label=cat["name"],
-                emoji=cat.get("emoji") or "🎫",
-                value=str(cat["id"])
-            ))
-            
-        select = discord.ui.Select(placeholder="Selecciona una categoría...", options=options, custom_id="ticket_panel_select")
+
+        # Para el registro persistente, options puede estar vacío (Discord reutiliza los del mensaje)
+        opts = []
+        if categories:
+            for cat in categories:
+                opts.append(discord.SelectOption(
+                    label=cat["name"],
+                    emoji=cat.get("emoji") or "🎫",
+                    value=str(cat["id"])
+                ))
+        else:
+            # Placeholder solo para registro; no se muestra al usuario en mensajes existentes
+            opts = [discord.SelectOption(label="\u200b", value="0")]
+
+        select = discord.ui.Select(
+            placeholder="Selecciona una categoría...",
+            options=opts,
+            custom_id="ticket_panel_select"
+        )
         select.callback = self.select_callback
         self.add_item(select)
 
     async def select_callback(self, interaction: discord.Interaction):
         cat_id = int(interaction.data["values"][0])
-        # Find category
+        if cat_id == 0:
+            return await interaction.response.send_message("❌ Panel no configurado correctamente.", ephemeral=True)
+        # Siempre re-leer desde DB para tener datos frescos
         categories = self.cog.db.get_ticket_categories(interaction.guild_id)
         category = next((c for c in categories if c["id"] == cat_id), None)
-        
+
         if not category:
-            return await interaction.response.send_message("❌ Categoría inválida.", ephemeral=True)
-            
+            return await interaction.response.send_message("❌ Categoría no encontrada. Regenera el panel con /tickets panel.", ephemeral=True)
+
         await interaction.response.send_modal(TicketModal(self.cog, category))
 
 
@@ -238,7 +249,40 @@ class Tickets(commands.Cog):
     async def create_ticket_channel(self, interaction: discord.Interaction, category: dict, answers: list):
         guild = interaction.guild
         config = self.db.get_ticket_config(guild.id)
-        
+
+        # ── Validaciones de límite/cooldown ───────────────────────────────────
+        max_t = int(config.get("max_tickets_per_user") or 0)
+        if max_t > 0:
+            open_count = self.db.count_open_tickets_by_user(guild.id, interaction.user.id)
+            if open_count >= max_t:
+                return await interaction.followup.send(
+                    f"❌ Ya tienes **{open_count}** ticket(s) abierto(s). "
+                    f"El máximo permitido es **{max_t}**.",
+                    ephemeral=True,
+                )
+
+        cooldown_secs = int(config.get("ticket_cooldown_seconds") or 0)
+        if cooldown_secs > 0:
+            last_str = self.db.get_last_ticket_time(guild.id, interaction.user.id)
+            if last_str:
+                from datetime import datetime, timezone
+                last_dt = datetime.fromisoformat(last_str)
+                now_dt = datetime.now(timezone.utc)
+                elapsed = (now_dt - last_dt).total_seconds()
+                if elapsed < cooldown_secs:
+                    remaining = int(cooldown_secs - elapsed)
+                    mins, secs = divmod(remaining, 60)
+                    hrs, mins = divmod(mins, 60)
+                    time_str = (
+                        f"{hrs}h {mins}m {secs}s" if hrs > 0
+                        else f"{mins}m {secs}s" if mins > 0
+                        else f"{secs}s"
+                    )
+                    return await interaction.followup.send(
+                        f"❌ Debes esperar **{time_str}** antes de abrir otro ticket.",
+                        ephemeral=True,
+                    )
+
         # Buscar la categoría en discord
         cat_id = config.get("category_id")
         discord_category = guild.get_channel(cat_id) if cat_id else interaction.channel.category
@@ -356,11 +400,11 @@ class Tickets(commands.Cog):
         except Exception as e:
             logger.error(f"Error exportando ticket HTML: {e}")
             
-        # 2. Trigger AI Summary (Flow 1) - placeholder para la Fase 3
+        # 2. Trigger AI Summary - si la IA está disponible
         if hasattr(self.bot, 'get_cog'):
             ia_cog = self.bot.get_cog('IA')
             if ia_cog and hasattr(ia_cog, 'summarize_ticket'):
-                await asyncio.create_task(ia_cog.summarize_ticket(ticket, channel))
+                asyncio.ensure_future(ia_cog.summarize_ticket(ticket, channel))
                 
         # 3. Delete channel
         try:
@@ -407,10 +451,26 @@ class Tickets(commands.Cog):
         logs="Canal de logs",
         staff_role="Rol que puede ver y tomar tickets",
         immune_role="Rol que puede gestionar tickets sin ser 'tomados' (admin/mod senior)",
-        template_nombre="Plantilla nombre canal (ej: ticket-{username}-{number})"
+        template_nombre="Plantilla nombre canal (ej: ticket-{username}-{number})",
+        max_tickets="Máximo de tickets abiertos por usuario (0 = ilimitado)",
+        cooldown="Cooldown entre tickets, por ej: 30m, 1h, 2d (0 = sin espera)"
     )
     @app_commands.checks.has_permissions(administrator=True)
-    async def setup_tickets(self, interaction: discord.Interaction, categoria: discord.CategoryChannel, logs: discord.TextChannel, staff_role: discord.Role, immune_role: discord.Role = None, template_nombre: str = "⚒️{username}-{number}"):
+    async def setup_tickets(self, interaction: discord.Interaction, categoria: discord.CategoryChannel,
+                            logs: discord.TextChannel, staff_role: discord.Role,
+                            immune_role: discord.Role = None,
+                            template_nombre: str = "⚒️{username}-{number}",
+                            max_tickets: int = 0, cooldown: str = "0"):
+        # Parsear cooldown
+        cooldown_secs = 0
+        if cooldown != "0":
+            units = {"m": 60, "h": 3600, "d": 86400}
+            unit = cooldown[-1].lower() if cooldown else "0"
+            try:
+                cooldown_secs = int(float(cooldown[:-1]) * units.get(unit, 1))
+            except (ValueError, IndexError):
+                cooldown_secs = 0
+
         immune_roles = [immune_role.id] if immune_role else []
         self.db.set_ticket_config(
             interaction.guild_id,
@@ -418,9 +478,20 @@ class Tickets(commands.Cog):
             log_channel_id=logs.id,
             allowed_roles=json.dumps([staff_role.id]),
             immune_roles=json.dumps(immune_roles),
-            channel_name_template=template_nombre
+            channel_name_template=template_nombre,
+            max_tickets_per_user=max_tickets,
+            ticket_cooldown_seconds=cooldown_secs,
         )
-        await interaction.response.send_message(f"✅ Configuración guardada.\n- **Categoría:** {categoria.name}\n- **Logs:** {logs.mention}\n- **Staff:** {staff_role.name}\n- **Plantilla:** {template_nombre}", ephemeral=True)
+        parts = [
+            f"✅ Configuración guardada.",
+            f"- **Categoría:** {categoria.name}",
+            f"- **Logs:** {logs.mention}",
+            f"- **Staff:** {staff_role.name}",
+            f"- **Plantilla:** {template_nombre}",
+            f"- **Máx tickets/usuario:** {'Ilimitado' if not max_tickets else max_tickets}",
+            f"- **Cooldown:** {'Sin espera' if not cooldown_secs else cooldown}",
+        ]
+        await interaction.response.send_message("\n".join(parts), ephemeral=True)
 
     @ticket_group.command(name="panel_embed", description="Configura el embed del panel de tickets (pasa el JSON del embed)")
     @app_commands.checks.has_permissions(administrator=True)
@@ -484,5 +555,9 @@ class Tickets(commands.Cog):
         self.db.set_ticket_config(interaction.guild_id, panel_channel_id=interaction.channel.id)
 
 async def setup(bot: commands.Bot):
-    await bot.add_cog(Tickets(bot))
+    cog = Tickets(bot)
+    await bot.add_cog(cog)
+    # Registrar vistas persistentes para que sobrevivan reinicios del bot
+    bot.add_view(TicketTakeCloseView(cog, 0))   # custom_ids fijos, ticket_id se lee de DB
+    bot.add_view(TicketPanelView(cog))          # sin categorías; callback re-lee de DB
 

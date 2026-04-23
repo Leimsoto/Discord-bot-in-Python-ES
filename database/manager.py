@@ -54,6 +54,19 @@ VALID_AI_CONFIG_COLUMNS = frozenset({
     "ai_imagine_enabled",
 })
 
+VALID_TICKET_COLUMNS = frozenset({
+    "channel_id", "staff_id", "status", "ai_summary", "closed_at",
+})
+
+VALID_GIVEAWAY_COLUMNS = frozenset({
+    "prize", "end_time", "winners_count", "req_roles", "deny_roles",
+    "participants", "ended",
+})
+
+VALID_SUGGESTION_COLUMNS = frozenset({
+    "message_id", "content", "status", "upvotes", "downvotes",
+})
+
 
 # ── Schema por tipo de base de datos ─────────────────────────────────────────
 
@@ -207,7 +220,15 @@ CREATE TABLE IF NOT EXISTS lofi_config (
     guild_id     INTEGER PRIMARY KEY,
     channel_id   INTEGER,
     volume       INTEGER DEFAULT 100,
-    enabled      INTEGER DEFAULT 0
+    enabled      INTEGER DEFAULT 0,
+    stream_url   TEXT,
+    station_name TEXT
+);
+
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    version     INTEGER PRIMARY KEY,
+    description TEXT,
+    applied_at  TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS bot_stats (
@@ -261,6 +282,78 @@ CREATE INDEX IF NOT EXISTS idx_mute_active ON user_records(mute_start)
     WHERE mute_start IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_cc_guild   ON channel_config(guild_id);
 CREATE INDEX IF NOT EXISTS idx_se_guild   ON saved_embeds(guild_id);
+
+CREATE TABLE IF NOT EXISTS tags (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id   INTEGER NOT NULL,
+    name       TEXT NOT NULL,
+    content    TEXT NOT NULL,
+    creator_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    uses       INTEGER DEFAULT 0,
+    UNIQUE(guild_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS reports (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id         INTEGER NOT NULL,
+    reporter_id      INTEGER NOT NULL,
+    reported_user_id INTEGER NOT NULL,
+    reason           TEXT NOT NULL,
+    ticket_id        INTEGER,
+    status           TEXT DEFAULT 'PENDING',
+    created_at       TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS scheduled_messages (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id         INTEGER NOT NULL,
+    name             TEXT NOT NULL,
+    channel_id       INTEGER NOT NULL,
+    content          TEXT NOT NULL,
+    interval_seconds INTEGER NOT NULL,
+    last_sent        TEXT,
+    enabled          INTEGER DEFAULT 1,
+    created_by       INTEGER NOT NULL,
+    created_at       TEXT NOT NULL,
+    UNIQUE(guild_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS user_levels (
+    user_id       INTEGER NOT NULL,
+    guild_id      INTEGER NOT NULL,
+    xp            INTEGER DEFAULT 0,
+    level         INTEGER DEFAULT 0,
+    message_count INTEGER DEFAULT 0,
+    PRIMARY KEY (user_id, guild_id)
+);
+
+CREATE TABLE IF NOT EXISTS xp_config (
+    guild_id                INTEGER PRIMARY KEY,
+    enabled                 INTEGER DEFAULT 0,
+    xp_min                  INTEGER DEFAULT 15,
+    xp_max                  INTEGER DEFAULT 25,
+    cooldown_seconds        INTEGER DEFAULT 60,
+    ignored_channels        TEXT DEFAULT '[]',
+    channel_multipliers     TEXT DEFAULT '{}',
+    announcement_channel_id INTEGER,
+    announcement_message    TEXT,
+    stack_rewards           INTEGER DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS level_rewards (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id INTEGER NOT NULL,
+    level    INTEGER NOT NULL,
+    role_id  INTEGER NOT NULL,
+    UNIQUE(guild_id, level)
+);
+
+CREATE INDEX IF NOT EXISTS idx_tags_guild  ON tags(guild_id);
+CREATE INDEX IF NOT EXISTS idx_rep_guild   ON reports(guild_id, status);
+CREATE INDEX IF NOT EXISTS idx_sched_guild ON scheduled_messages(guild_id, enabled);
+CREATE INDEX IF NOT EXISTS idx_ul_guild    ON user_levels(guild_id, xp);
+CREATE INDEX IF NOT EXISTS idx_lr_guild    ON level_rewards(guild_id);
 """
 
 _SCHEMA_POSTGRESQL = """
@@ -413,7 +506,15 @@ CREATE TABLE IF NOT EXISTS lofi_config (
     guild_id     BIGINT PRIMARY KEY,
     channel_id   BIGINT,
     volume       INTEGER DEFAULT 100,
-    enabled      SMALLINT DEFAULT 0
+    enabled      SMALLINT DEFAULT 0,
+    stream_url   TEXT,
+    station_name TEXT
+);
+
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    version     INTEGER PRIMARY KEY,
+    description TEXT,
+    applied_at  TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS bot_stats (
@@ -465,6 +566,78 @@ CREATE INDEX IF NOT EXISTS idx_ma_target ON mod_actions(target_id, guild_id);
 CREATE INDEX IF NOT EXISTS idx_ma_time   ON mod_actions(guild_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_cc_guild  ON channel_config(guild_id);
 CREATE INDEX IF NOT EXISTS idx_se_guild  ON saved_embeds(guild_id);
+
+CREATE TABLE IF NOT EXISTS tags (
+    id         BIGSERIAL PRIMARY KEY,
+    guild_id   BIGINT NOT NULL,
+    name       TEXT NOT NULL,
+    content    TEXT NOT NULL,
+    creator_id BIGINT NOT NULL,
+    created_at TEXT NOT NULL,
+    uses       INTEGER DEFAULT 0,
+    UNIQUE(guild_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS reports (
+    id               BIGSERIAL PRIMARY KEY,
+    guild_id         BIGINT NOT NULL,
+    reporter_id      BIGINT NOT NULL,
+    reported_user_id BIGINT NOT NULL,
+    reason           TEXT NOT NULL,
+    ticket_id        BIGINT,
+    status           TEXT DEFAULT 'PENDING',
+    created_at       TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS scheduled_messages (
+    id               BIGSERIAL PRIMARY KEY,
+    guild_id         BIGINT NOT NULL,
+    name             TEXT NOT NULL,
+    channel_id       BIGINT NOT NULL,
+    content          TEXT NOT NULL,
+    interval_seconds INTEGER NOT NULL,
+    last_sent        TEXT,
+    enabled          SMALLINT DEFAULT 1,
+    created_by       BIGINT NOT NULL,
+    created_at       TEXT NOT NULL,
+    UNIQUE(guild_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS user_levels (
+    user_id       BIGINT NOT NULL,
+    guild_id      BIGINT NOT NULL,
+    xp            INTEGER DEFAULT 0,
+    level         INTEGER DEFAULT 0,
+    message_count INTEGER DEFAULT 0,
+    PRIMARY KEY (user_id, guild_id)
+);
+
+CREATE TABLE IF NOT EXISTS xp_config (
+    guild_id                BIGINT PRIMARY KEY,
+    enabled                 SMALLINT DEFAULT 0,
+    xp_min                  INTEGER DEFAULT 15,
+    xp_max                  INTEGER DEFAULT 25,
+    cooldown_seconds        INTEGER DEFAULT 60,
+    ignored_channels        TEXT DEFAULT '[]',
+    channel_multipliers     TEXT DEFAULT '{}',
+    announcement_channel_id BIGINT,
+    announcement_message    TEXT,
+    stack_rewards           SMALLINT DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS level_rewards (
+    id       BIGSERIAL PRIMARY KEY,
+    guild_id BIGINT NOT NULL,
+    level    INTEGER NOT NULL,
+    role_id  BIGINT NOT NULL,
+    UNIQUE(guild_id, level)
+);
+
+CREATE INDEX IF NOT EXISTS idx_tags_guild  ON tags(guild_id);
+CREATE INDEX IF NOT EXISTS idx_rep_guild   ON reports(guild_id, status);
+CREATE INDEX IF NOT EXISTS idx_sched_guild ON scheduled_messages(guild_id, enabled);
+CREATE INDEX IF NOT EXISTS idx_ul_guild    ON user_levels(guild_id, xp);
+CREATE INDEX IF NOT EXISTS idx_lr_guild    ON level_rewards(guild_id);
 """
 
 _SCHEMA_MARIADB = """
@@ -625,7 +798,15 @@ CREATE TABLE IF NOT EXISTS lofi_config (
     guild_id     BIGINT PRIMARY KEY,
     channel_id   BIGINT,
     volume       INT DEFAULT 100,
-    enabled      TINYINT DEFAULT 0
+    enabled      TINYINT DEFAULT 0,
+    stream_url   TEXT,
+    station_name TEXT
+) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    version     INTEGER PRIMARY KEY,
+    description TEXT,
+    applied_at  VARCHAR(50) NOT NULL
 ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS bot_stats (
@@ -673,6 +854,76 @@ CREATE TABLE IF NOT EXISTS tickets (
     closed_at     VARCHAR(50),
     PRIMARY KEY (id)
 ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS tags (
+    id         BIGINT NOT NULL AUTO_INCREMENT,
+    guild_id   BIGINT NOT NULL,
+    name       VARCHAR(100) NOT NULL,
+    content    TEXT NOT NULL,
+    creator_id BIGINT NOT NULL,
+    created_at VARCHAR(50) NOT NULL,
+    uses       INT DEFAULT 0,
+    PRIMARY KEY (id),
+    UNIQUE KEY unique_tag (guild_id, name)
+) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS reports (
+    id               BIGINT NOT NULL AUTO_INCREMENT,
+    guild_id         BIGINT NOT NULL,
+    reporter_id      BIGINT NOT NULL,
+    reported_user_id BIGINT NOT NULL,
+    reason           TEXT NOT NULL,
+    ticket_id        BIGINT,
+    status           VARCHAR(20) DEFAULT 'PENDING',
+    created_at       VARCHAR(50) NOT NULL,
+    PRIMARY KEY (id)
+) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS scheduled_messages (
+    id               BIGINT NOT NULL AUTO_INCREMENT,
+    guild_id         BIGINT NOT NULL,
+    name             VARCHAR(100) NOT NULL,
+    channel_id       BIGINT NOT NULL,
+    content          TEXT NOT NULL,
+    interval_seconds INT NOT NULL,
+    last_sent        VARCHAR(50),
+    enabled          TINYINT DEFAULT 1,
+    created_by       BIGINT NOT NULL,
+    created_at       VARCHAR(50) NOT NULL,
+    PRIMARY KEY (id),
+    UNIQUE KEY unique_schedule (guild_id, name)
+) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS user_levels (
+    user_id       BIGINT NOT NULL,
+    guild_id      BIGINT NOT NULL,
+    xp            INT DEFAULT 0,
+    level         INT DEFAULT 0,
+    message_count INT DEFAULT 0,
+    PRIMARY KEY (user_id, guild_id)
+) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS xp_config (
+    guild_id                BIGINT PRIMARY KEY,
+    enabled                 TINYINT DEFAULT 0,
+    xp_min                  INT DEFAULT 15,
+    xp_max                  INT DEFAULT 25,
+    cooldown_seconds        INT DEFAULT 60,
+    ignored_channels        TEXT,
+    channel_multipliers     TEXT,
+    announcement_channel_id BIGINT,
+    announcement_message    TEXT,
+    stack_rewards           TINYINT DEFAULT 1
+) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS level_rewards (
+    id       BIGINT NOT NULL AUTO_INCREMENT,
+    guild_id BIGINT NOT NULL,
+    level    INT NOT NULL,
+    role_id  BIGINT NOT NULL,
+    PRIMARY KEY (id),
+    UNIQUE KEY unique_reward (guild_id, level)
+) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 """
 
 
@@ -718,12 +969,21 @@ class DatabaseManager:
     }
 
     def __init__(self):
+        import threading
         self.db_type = os.getenv("DB_TYPE", "sqlite").lower()
 
         if self.db_type == "sqlite":
+            import sqlite3
             data_dir = Path(__file__).parent.parent / "data"
             data_dir.mkdir(exist_ok=True)
             self.db_path = str(data_dir / "bot.db")
+            # Conexión persistente con lock para acceso concurrente seguro
+            self._sqlite_lock = threading.Lock()
+            self._sqlite_conn = sqlite3.connect(self.db_path, check_same_thread=False)
+            self._sqlite_conn.row_factory = sqlite3.Row
+            self._sqlite_conn.execute("PRAGMA journal_mode=WAL")
+            self._sqlite_conn.execute("PRAGMA foreign_keys=ON")
+            self._sqlite_conn.commit()
             logger.info(f"Base de datos: SQLite → {self.db_path}")
 
         elif self.db_type in ("postgresql", "mariadb"):
@@ -741,6 +1001,14 @@ class DatabaseManager:
             )
 
         self._init_schema()
+
+    def __del__(self):
+        """Cierra la conexión persistente de SQLite al destruir el objeto."""
+        if self.db_type == "sqlite" and hasattr(self, '_sqlite_conn'):
+            try:
+                self._sqlite_conn.close()
+            except Exception:
+                pass
 
     # ── Utilidades internas ───────────────────────────────────────────────────
 
@@ -761,18 +1029,25 @@ class DatabaseManager:
     def _conn(self):
         """
         Context manager de conexión.
-        Commit automático al salir; rollback en caso de excepción.
+        SQLite: reutiliza la conexión persistente con lock de hilo.
+        PostgreSQL/MariaDB: abre y cierra por operación.
         """
+        if self.db_type == "sqlite":
+            # Conexión compartida protegida por lock
+            with self._sqlite_lock:
+                try:
+                    yield self._sqlite_conn
+                    self._sqlite_conn.commit()
+                except Exception as exc:
+                    self._sqlite_conn.rollback()
+                    logger.error(f"Error de base de datos: {exc}")
+                    raise
+            return
+
+        # PostgreSQL y MariaDB: conexión por operación
         connection = None
         try:
-            if self.db_type == "sqlite":
-                import sqlite3
-                connection = sqlite3.connect(self.db_path)
-                connection.row_factory = sqlite3.Row
-                connection.execute("PRAGMA journal_mode=WAL")
-                connection.execute("PRAGMA foreign_keys=ON")
-
-            elif self.db_type == "postgresql":
+            if self.db_type == "postgresql":
                 import psycopg2
                 from psycopg2.extras import RealDictCursor
                 connection = psycopg2.connect(self.connection_url)
@@ -873,6 +1148,7 @@ class DatabaseManager:
 
         logger.info("Schema de base de datos inicializado correctamente.")
         self._migrate_ai_config()
+        self._run_migrations()
 
     def _migrate_ai_config(self) -> None:
         """
@@ -899,6 +1175,55 @@ class DatabaseManager:
                 logger.info(f"Migración ai_config: columna '{col}' añadida.")
             except Exception:
                 pass  # Columna ya existe o error ignorable
+
+    # ── Sistema de Migraciones ──────────────────────────────────────────────
+
+    # Lista de migraciones: (version, descripcion, sql)
+    # El SQL es el mismo para los 3 motores; se adaptan placeholders automáticamente.
+    _MIGRATIONS: List[tuple] = [
+        (1, "lofi_config: añadir stream_url",
+         "ALTER TABLE lofi_config ADD COLUMN stream_url TEXT"),
+        (2, "lofi_config: añadir station_name",
+         "ALTER TABLE lofi_config ADD COLUMN station_name TEXT"),
+        (3, "ticket_config: máx tickets por usuario",
+         "ALTER TABLE ticket_config ADD COLUMN max_tickets_per_user INTEGER DEFAULT 0"),
+        (4, "ticket_config: cooldown entre tickets",
+         "ALTER TABLE ticket_config ADD COLUMN ticket_cooldown_seconds INTEGER DEFAULT 0"),
+    ]
+
+    def _run_migrations(self) -> None:
+        """
+        Ejecuta las migraciones pendientes de forma secuencial e idempotente.
+        Cada migración se registra en la tabla schema_migrations para no repetirse.
+        """
+        try:
+            applied = {r["version"] for r in self._fetchall("SELECT version FROM schema_migrations", ())}
+        except Exception:
+            applied = set()
+
+        for version, description, sql in self._MIGRATIONS:
+            if version in applied:
+                continue
+            try:
+                self._execute(sql, ())
+                self._execute(
+                    "INSERT INTO schema_migrations (version, description, applied_at) VALUES (?, ?, ?)",
+                    (version, description, datetime.now(timezone.utc).isoformat()),
+                )
+                logger.info(f"Migración v{version} aplicada: {description}")
+            except Exception as exc:
+                # Ignorar si la columna ya existe (bases de datos antiguas con ensure_column aplicado)
+                if "duplicate column" in str(exc).lower() or "already exists" in str(exc).lower():
+                    # Registrar igualmente para no reintentar
+                    try:
+                        self._execute(
+                            "INSERT INTO schema_migrations (version, description, applied_at) VALUES (?, ?, ?)",
+                            (version, description, datetime.now(timezone.utc).isoformat()),
+                        )
+                    except Exception:
+                        pass
+                else:
+                    logger.warning(f"Error en migración v{version} ('{description}'): {exc}")
 
     def _has_column(self, table: str, column: str) -> bool:
         """Comprueba si una tabla tiene una columna (multi-DB)."""
@@ -1354,6 +1679,9 @@ class DatabaseManager:
 
     def update_suggestion(self, suggestion_id: int, **kwargs) -> None:
         if not kwargs: return
+        invalid = set(kwargs) - VALID_SUGGESTION_COLUMNS
+        if invalid:
+            raise ValueError(f"Columnas inválidas en suggestions: {invalid}")
         ops = [(f"UPDATE suggestions SET {col} = ? WHERE id = ?", (val, suggestion_id)) for col, val in kwargs.items()]
         self._executemany(ops)
 
@@ -1372,6 +1700,9 @@ class DatabaseManager:
 
     def update_giveaway(self, message_id: int, **kwargs) -> None:
         if not kwargs: return
+        invalid = set(kwargs) - VALID_GIVEAWAY_COLUMNS
+        if invalid:
+            raise ValueError(f"Columnas inválidas en giveaways: {invalid}")
         ops = [(f"UPDATE giveaways SET {col} = ? WHERE message_id = ?", (val, message_id)) for col, val in kwargs.items()]
         self._executemany(ops)
 
@@ -1463,5 +1794,217 @@ class DatabaseManager:
 
     def update_ticket(self, ticket_id: int, **kwargs) -> None:
         if not kwargs: return
+        invalid = set(kwargs) - VALID_TICKET_COLUMNS
+        if invalid:
+            raise ValueError(f"Columnas inválidas en tickets: {invalid}")
         ops = [(f"UPDATE tickets SET {col} = ? WHERE id = ?", (val, ticket_id)) for col, val in kwargs.items()]
         self._executemany(ops)
+
+    def count_open_tickets_by_user(self, guild_id: int, user_id: int) -> int:
+        row = self._fetchone(
+            "SELECT COUNT(*) as cnt FROM tickets WHERE guild_id = ? AND user_id = ? AND status = 'OPEN'",
+            (guild_id, user_id)
+        )
+        return int(row["cnt"]) if row else 0
+
+    def get_last_ticket_time(self, guild_id: int, user_id: int) -> Optional[str]:
+        row = self._fetchone(
+            "SELECT MAX(created_at) as last FROM tickets WHERE guild_id = ? AND user_id = ?",
+            (guild_id, user_id)
+        )
+        return row["last"] if row else None
+
+    # ── Tags ──────────────────────────────────────────────────────────────────
+
+    def get_tag(self, guild_id: int, name: str) -> Optional[Dict]:
+        return self._fetchone("SELECT * FROM tags WHERE guild_id = ? AND name = ?", (guild_id, name.lower()))
+
+    def get_all_tags(self, guild_id: int) -> List[Dict]:
+        return self._fetchall("SELECT * FROM tags WHERE guild_id = ? ORDER BY name ASC", (guild_id,))
+
+    def create_tag(self, guild_id: int, name: str, content: str, creator_id: int) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        self._execute(
+            "INSERT INTO tags (guild_id, name, content, creator_id, created_at) VALUES (?, ?, ?, ?, ?)",
+            (guild_id, name.lower(), content, creator_id, now)
+        )
+
+    def update_tag(self, guild_id: int, name: str, content: str) -> None:
+        self._execute(
+            "UPDATE tags SET content = ? WHERE guild_id = ? AND name = ?",
+            (content, guild_id, name.lower())
+        )
+
+    def delete_tag(self, guild_id: int, name: str) -> None:
+        self._execute("DELETE FROM tags WHERE guild_id = ? AND name = ?", (guild_id, name.lower()))
+
+    def increment_tag_uses(self, guild_id: int, name: str) -> None:
+        self._execute("UPDATE tags SET uses = uses + 1 WHERE guild_id = ? AND name = ?", (guild_id, name.lower()))
+
+    # ── Reports ───────────────────────────────────────────────────────────────
+
+    def create_report(self, guild_id: int, reporter_id: int, reported_user_id: int, reason: str) -> int:
+        now = datetime.now(timezone.utc).isoformat()
+        self._execute(
+            "INSERT INTO reports (guild_id, reporter_id, reported_user_id, reason, created_at) VALUES (?, ?, ?, ?, ?)",
+            (guild_id, reporter_id, reported_user_id, reason, now)
+        )
+        row = self._fetchone(
+            "SELECT id FROM reports WHERE guild_id = ? AND reporter_id = ? ORDER BY id DESC LIMIT 1",
+            (guild_id, reporter_id)
+        )
+        return int(row["id"]) if row else 0
+
+    def get_reports(self, guild_id: int, status: str = None) -> List[Dict]:
+        if status:
+            return self._fetchall("SELECT * FROM reports WHERE guild_id = ? AND status = ? ORDER BY id DESC", (guild_id, status))
+        return self._fetchall("SELECT * FROM reports WHERE guild_id = ? ORDER BY id DESC", (guild_id,))
+
+    def update_report(self, report_id: int, **kwargs) -> None:
+        valid = frozenset({"status", "ticket_id"})
+        invalid = set(kwargs) - valid
+        if invalid:
+            raise ValueError(f"Columnas inválidas en reports: {invalid}")
+        ops = [(f"UPDATE reports SET {col} = ? WHERE id = ?", (val, report_id)) for col, val in kwargs.items()]
+        self._executemany(ops)
+
+    # ── Scheduled Messages ────────────────────────────────────────────────────
+
+    def create_schedule(self, guild_id: int, name: str, channel_id: int,
+                        content: str, interval_seconds: int, created_by: int) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        self._execute(
+            "INSERT INTO scheduled_messages (guild_id, name, channel_id, content, interval_seconds, created_by, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (guild_id, name, channel_id, content, interval_seconds, created_by, now)
+        )
+
+    def get_schedules(self, guild_id: int) -> List[Dict]:
+        return self._fetchall("SELECT * FROM scheduled_messages WHERE guild_id = ? ORDER BY name ASC", (guild_id,))
+
+    def get_all_active_schedules(self) -> List[Dict]:
+        return self._fetchall("SELECT * FROM scheduled_messages WHERE enabled = 1", ())
+
+    def update_schedule(self, schedule_id: int, **kwargs) -> None:
+        valid = frozenset({"enabled", "channel_id", "content", "interval_seconds", "last_sent"})
+        invalid = set(kwargs) - valid
+        if invalid:
+            raise ValueError(f"Columnas inválidas en scheduled_messages: {invalid}")
+        ops = [(f"UPDATE scheduled_messages SET {col} = ? WHERE id = ?", (val, schedule_id)) for col, val in kwargs.items()]
+        self._executemany(ops)
+
+    def delete_schedule(self, guild_id: int, name: str) -> None:
+        self._execute("DELETE FROM scheduled_messages WHERE guild_id = ? AND name = ?", (guild_id, name))
+
+    def get_schedule_by_name(self, guild_id: int, name: str) -> Optional[Dict]:
+        return self._fetchone("SELECT * FROM scheduled_messages WHERE guild_id = ? AND name = ?", (guild_id, name))
+
+    # ── Levels / XP ───────────────────────────────────────────────────────────
+
+    def get_user_level(self, user_id: int, guild_id: int) -> Dict:
+        row = self._fetchone("SELECT * FROM user_levels WHERE user_id = ? AND guild_id = ?", (user_id, guild_id))
+        return row or {"user_id": user_id, "guild_id": guild_id, "xp": 0, "level": 0, "message_count": 0}
+
+    @staticmethod
+    def _xp_for_level(n: int) -> int:
+        """XP total acumulado necesario para alcanzar el nivel n (fórmula MEE6)."""
+        total = 0
+        for k in range(1, n + 1):
+            total += 5 * k * k + 50 * k + 100
+        return total
+
+    @staticmethod
+    def _compute_level(total_xp: int) -> int:
+        """Calcula el nivel para un XP total dado."""
+        level = 0
+        needed = 0
+        while True:
+            needed += 5 * (level + 1) ** 2 + 50 * (level + 1) + 100
+            if total_xp < needed:
+                break
+            level += 1
+        return level
+
+    def add_xp(self, user_id: int, guild_id: int, amount: int) -> Dict:
+        """Añade XP y devuelve dict con nuevo estado y si hubo level-up."""
+        row = self.get_user_level(user_id, guild_id)
+        new_xp = int(row["xp"]) + amount
+        new_level = self._compute_level(new_xp)
+        old_level = int(row["level"])
+        leveled_up = new_level > old_level
+        new_count = int(row["message_count"]) + 1
+
+        if self.db_type == "sqlite":
+            self._execute(
+                "INSERT INTO user_levels (user_id, guild_id, xp, level, message_count) VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(user_id, guild_id) DO UPDATE SET xp = ?, level = ?, message_count = ?",
+                (user_id, guild_id, new_xp, new_level, new_count, new_xp, new_level, new_count)
+            )
+        elif self.db_type == "postgresql":
+            self._execute(
+                "INSERT INTO user_levels (user_id, guild_id, xp, level, message_count) VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT (user_id, guild_id) DO UPDATE SET xp = EXCLUDED.xp, level = EXCLUDED.level, message_count = EXCLUDED.message_count",
+                (user_id, guild_id, new_xp, new_level, new_count)
+            )
+        else:
+            self._execute(
+                "INSERT INTO user_levels (user_id, guild_id, xp, level, message_count) VALUES (?, ?, ?, ?, ?) "
+                "ON DUPLICATE KEY UPDATE xp = VALUES(xp), level = VALUES(level), message_count = VALUES(message_count)",
+                (user_id, guild_id, new_xp, new_level, new_count)
+            )
+        return {"xp": new_xp, "level": new_level, "old_level": old_level, "leveled_up": leveled_up}
+
+    def reset_user_level(self, user_id: int, guild_id: int) -> None:
+        self._execute(
+            "UPDATE user_levels SET xp = 0, level = 0, message_count = 0 WHERE user_id = ? AND guild_id = ?",
+            (user_id, guild_id)
+        )
+
+    def get_leaderboard(self, guild_id: int, limit: int = 10) -> List[Dict]:
+        return self._fetchall(
+            "SELECT user_id, xp, level, message_count, "
+            "ROW_NUMBER() OVER (ORDER BY xp DESC) as position "
+            "FROM user_levels WHERE guild_id = ? ORDER BY xp DESC LIMIT ?",
+            (guild_id, limit)
+        )
+
+    def get_xp_config(self, guild_id: int) -> Dict:
+        row = self._fetchone("SELECT * FROM xp_config WHERE guild_id = ?", (guild_id,))
+        return row or {
+            "guild_id": guild_id, "enabled": 0, "xp_min": 15, "xp_max": 25,
+            "cooldown_seconds": 60, "ignored_channels": "[]", "channel_multipliers": "{}",
+            "announcement_channel_id": None, "announcement_message": None, "stack_rewards": 1,
+        }
+
+    def set_xp_config(self, guild_id: int, **kwargs) -> None:
+        self._upsert_config("xp_config", guild_id, **kwargs)
+
+    def get_level_rewards(self, guild_id: int) -> List[Dict]:
+        return self._fetchall("SELECT * FROM level_rewards WHERE guild_id = ? ORDER BY level ASC", (guild_id,))
+
+    def set_level_reward(self, guild_id: int, level: int, role_id: int) -> None:
+        if self.db_type == "sqlite":
+            self._execute(
+                "INSERT INTO level_rewards (guild_id, level, role_id) VALUES (?, ?, ?) "
+                "ON CONFLICT(guild_id, level) DO UPDATE SET role_id = ?",
+                (guild_id, level, role_id, role_id)
+            )
+        elif self.db_type == "postgresql":
+            self._execute(
+                "INSERT INTO level_rewards (guild_id, level, role_id) VALUES (?, ?, ?) "
+                "ON CONFLICT (guild_id, level) DO UPDATE SET role_id = EXCLUDED.role_id",
+                (guild_id, level, role_id)
+            )
+        else:
+            self._execute(
+                "INSERT INTO level_rewards (guild_id, level, role_id) VALUES (?, ?, ?) "
+                "ON DUPLICATE KEY UPDATE role_id = VALUES(role_id)",
+                (guild_id, level, role_id)
+            )
+
+    def delete_level_reward(self, guild_id: int, level: int) -> None:
+        self._execute("DELETE FROM level_rewards WHERE guild_id = ? AND level = ?", (guild_id, level))
+
+    def get_level_reward(self, guild_id: int, level: int) -> Optional[Dict]:
+        return self._fetchone("SELECT * FROM level_rewards WHERE guild_id = ? AND level = ?", (guild_id, level))
+

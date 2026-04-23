@@ -73,7 +73,6 @@ class TortuguBot(commands.Bot):
         
         @tasks.loop(seconds=30)
         async def bot_stats_updater():
-            await self.wait_until_ready()
             members_online = sum(
                 1 for g in self.guilds for m in g.members 
                 if m.status != discord.Status.offline
@@ -90,8 +89,13 @@ class TortuguBot(commands.Bot):
                 except Exception:
                     pass
                 self.db.update_bot_stats(members_online, total_members, open_tickets, uptime_seconds)
-                
+
+        @bot_stats_updater.before_loop
+        async def before_bot_stats_updater():
+            await self.wait_until_ready()
+
         bot_stats_updater.start()
+
         cogs = [
             "cogs.moderation",
             "cogs.info",
@@ -106,6 +110,11 @@ class TortuguBot(commands.Bot):
             "cogs.autoroles",
             "cogs.lofi",
             "cogs.tickets",
+            # ── Nuevos módulos ──
+            "cogs.tags",
+            "cogs.reports",
+            "cogs.scheduler",
+            "cogs.levels",
         ]
         for cog in cogs:
             try:
