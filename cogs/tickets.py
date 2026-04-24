@@ -447,7 +447,7 @@ class Tickets(commands.Cog):
     ticket_group = app_commands.Group(
         name="tickets",
         description="Gestión de Tickets",
-        default_member_permissions=discord.Permissions(administrator=True),
+        default_permissions=discord.Permissions(administrator=True),
     )
 
     @ticket_group.command(name="setup", description="Configura los canales y roles del sistema de tickets")

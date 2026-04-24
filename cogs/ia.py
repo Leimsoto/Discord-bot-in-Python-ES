@@ -174,7 +174,7 @@ class IAConfigView(discord.ui.View):
     @discord.ui.button(label="Canal Chat", style=discord.ButtonStyle.secondary, emoji="💬", row=1)
     async def chat_channel_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_message(
-            "Menciona el canal de chat de IA (ej: #chat-ai):", ephemeral=True
+            "Menciona el canal de chat de IA (ej: #chat-ai) o escribe `none` para desactivarlo:", ephemeral=True
         )
         try:
             msg = await self.cog.bot.wait_for(
@@ -182,7 +182,12 @@ class IAConfigView(discord.ui.View):
                 check=lambda m: m.author == interaction.user and m.channel == interaction.channel,
                 timeout=60.0,
             )
-            if msg.channel_mentions:
+            if msg.content.strip().lower() == "none":
+                self.cog.db.set_ai_config(self.guild_id, ai_channel_id=None)
+                await msg.delete()
+                embed = self.cog._build_ia_embed(interaction.guild, self.cog.db.get_ai_config(self.guild_id))
+                await interaction.edit_original_response(embed=embed, view=self)
+            elif msg.channel_mentions:
                 self.cog.db.set_ai_config(self.guild_id, ai_channel_id=msg.channel_mentions[0].id)
                 await msg.delete()
                 embed = self.cog._build_ia_embed(interaction.guild, self.cog.db.get_ai_config(self.guild_id))

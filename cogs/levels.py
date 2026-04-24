@@ -340,7 +340,7 @@ class Levels(commands.Cog):
     xp_group = app_commands.Group(
         name="xp",
         description="Gestión del sistema XP",
-        default_member_permissions=discord.Permissions(administrator=True),
+        default_permissions=discord.Permissions(administrator=True),
     )
     xp_reward_group = app_commands.Group(
         name="reward",

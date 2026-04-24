@@ -99,9 +99,12 @@ class Embeds(commands.Cog):
         role_id = srv_cfg.get("embed_role_id")
         if role_id and any(r.id == role_id for r in member.roles):
             return True
-        await interaction.response.send_message(
-            "❌ Necesitas el **rol de embeds** configurado o ser administrador.", ephemeral=True,
-        )
+            
+        msg = "❌ Necesitas el **rol de embeds** configurado o ser administrador."
+        if interaction.response.is_done():
+            await interaction.followup.send(msg, ephemeral=True)
+        else:
+            await interaction.response.send_message(msg, ephemeral=True)
         return False
 
     embed_group = app_commands.Group(
@@ -112,22 +115,24 @@ class Embeds(commands.Cog):
     @embed_group.command(name="create", description="Abre el constructor de embeds interactivo")
     @app_commands.checks.cooldown(1, 30, key=lambda i: (i.guild_id, i.user.id))
     async def embed_create(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
         if not await self._check_embed_perms(interaction):
             return
 
         builder = EmbedBuilder()
         view = EmbedBuilderView(self, builder, interaction.user.id)
         status = view.build_status_embed(builder)
-        await interaction.response.send_message(embed=status, view=view, ephemeral=True)
+        await interaction.followup.send(embed=status, view=view, ephemeral=True)
 
     @embed_group.command(name="list", description="Lista los embeds guardados del servidor")
     async def embed_list(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
         if not await self._check_embed_perms(interaction):
             return
 
         embeds_saved = self.db.get_saved_embeds(interaction.guild_id)
         if not embeds_saved:
-            return await interaction.response.send_message(
+            return await interaction.followup.send(
                 "📭 No hay embeds guardados en este servidor.", ephemeral=True,
             )
 
@@ -142,24 +147,25 @@ class Embeds(commands.Cog):
             description="\n".join(lines),
             color=discord.Color.blurple(),
         )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     @embed_group.command(name="load", description="Carga un embed guardado para editarlo o enviarlo")
     @app_commands.describe(nombre="Nombre del embed guardado")
     async def embed_load(self, interaction: discord.Interaction, nombre: str):
+        await interaction.response.defer(ephemeral=True)
         if not await self._check_embed_perms(interaction):
             return
 
         saved = self.db.get_saved_embed_by_name(interaction.guild_id, nombre)
         if not saved:
-            return await interaction.response.send_message(
+            return await interaction.followup.send(
                 f"❌ No se encontró un embed con nombre `{nombre}`.", ephemeral=True,
             )
 
         builder = EmbedBuilder.from_json(saved["embed_data"])
         view = EmbedBuilderView(self, builder, interaction.user.id)
         status = view.build_status_embed(builder)
-        await interaction.response.send_message(embed=status, view=view, ephemeral=True)
+        await interaction.followup.send(embed=status, view=view, ephemeral=True)
 
 
 # ── Vista principal del constructor ───────────────────────────────────────────

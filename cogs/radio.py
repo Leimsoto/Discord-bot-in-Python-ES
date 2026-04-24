@@ -68,11 +68,13 @@ class Radio(commands.Cog):
         station_name = cfg.get("station_name", "Lofi Radio 24/7")
 
         try:
+            import shutil
+            ffmpeg_path = shutil.which("ffmpeg") or "ffmpeg"
             ffmpeg_options = {
                 'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
                 'options': '-vn'
             }
-            audio_source = discord.FFmpegPCMAudio(stream_url, **ffmpeg_options)
+            audio_source = discord.FFmpegPCMAudio(stream_url, executable=ffmpeg_path, **ffmpeg_options)
 
             vol = cfg.get("volume", 100) / 100.0
             if vol != 1.0:
@@ -130,7 +132,7 @@ class Radio(commands.Cog):
     radio_group = app_commands.Group(
         name="radio",
         description="Configuración de Radio 24/7",
-        default_member_permissions=discord.Permissions(administrator=True),
+        default_permissions=discord.Permissions(administrator=True),
     )
 
     @radio_group.command(name="setup", description="Configura una estación de radio 24/7 en un canal de voz")
