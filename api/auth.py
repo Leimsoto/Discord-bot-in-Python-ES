@@ -23,8 +23,9 @@ import os
 import logging
 from datetime import datetime, timezone, timedelta
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import RedirectResponse
+from api.deps import get_current_user
 
 logger = logging.getLogger("API.auth")
 
@@ -36,13 +37,13 @@ DISCORD_CDN = "https://cdn.discordapp.com"
 
 def _get_oauth_config() -> dict:
     """Lee la config de OAuth2 desde el entorno."""
+    api_base = os.getenv("API_BASE_URL", "http://localhost:8080")
     return {
         "client_id": os.getenv("DISCORD_CLIENT_ID", ""),
         "client_secret": os.getenv("DISCORD_CLIENT_SECRET", ""),
         "jwt_secret": os.getenv("JWT_SECRET", ""),
         "dashboard_url": os.getenv("DASHBOARD_URL", "http://localhost:3000"),
-        "redirect_uri": os.getenv("DASHBOARD_URL", "http://localhost:3000").rstrip("/")
-                        + "/api/auth/callback",
+        "redirect_uri": api_base.rstrip("/") + "/api/auth/callback",
     }
 
 
@@ -152,24 +153,14 @@ async def callback(code: str):
 
 
 @router.get("/me")
-async def get_me():
+async def get_me(user: dict = Depends(get_current_user)):
     """
     Devuelve los datos del usuario autenticado.
     El frontend debe enviar el JWT en el header Authorization: Bearer <token>.
-
-    (Este endpoint será funcional cuando se configure JWT_SECRET)
     """
-    from api.deps import get_current_user
-    # Nota: en producción esto usa el dependency injection de FastAPI.
-    # Aquí es un endpoint informativo que indica el formato esperado.
     return {
-        "info": "Envía el JWT como header Authorization: Bearer <token>",
-        "ejemplo_respuesta": {
-            "user_id": 123456789,
-            "username": "usuario",
-            "avatar_url": f"{DISCORD_CDN}/avatars/123456789/abc123.webp",
-            "admin_guilds": [
-                {"id": "987654321", "name": "Mi Servidor", "icon": "..."}
-            ],
-        },
+        "user_id": user["user_id"],
+        "username": user.get("username", ""),
+        "guilds": user.get("guilds", []),
+        "is_dev_mode": user.get("is_dev_mode", False),
     }

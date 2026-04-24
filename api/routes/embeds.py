@@ -61,21 +61,15 @@ async def create_embed(
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="El campo embed_data debe ser un JSON válido.")
 
-    # La función original en database/manager.py toma 4 argumentos
-    # Def: add_saved_embed(self, guild_id: int, creator_id: int, name: str, embed_data: str)
     try:
-        creator_id = int(user.get("id")) if user and user.get("id") else 0
-        
-        # Check if already exists to delete and replace or we can just try adding it
+        creator_id = int(user.get("user_id", 0))
+
+        # Si ya existe uno con ese nombre, eliminarlo primero (upsert)
         existing = db.get_saved_embed_by_name(guild_id, body.name)
         if existing:
             db.delete_saved_embed(existing["id"])
-            
-        db._execute(
-            "INSERT INTO saved_embeds (guild_id, creator_id, name, embed_data, created_at) "
-            "VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)",
-            (guild_id, creator_id, body.name, body.embed_data)
-        )
+
+        db.save_embed(guild_id, creator_id, body.name, body.embed_data)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error al guardar: {str(e)}")
 

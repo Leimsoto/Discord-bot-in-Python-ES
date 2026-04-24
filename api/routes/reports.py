@@ -36,9 +36,8 @@ async def get_report(
     _user=Depends(require_guild_admin),
 ):
     """Detalle de un reporte específico."""
-    reports = db.get_reports(guild_id)
-    report = next((r for r in reports if int(r["id"]) == report_id), None)
-    if not report:
+    report = db.get_report(report_id)
+    if not report or int(report["guild_id"]) != guild_id:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Reporte #{report_id} no encontrado en este servidor",
@@ -56,9 +55,8 @@ async def update_report(
 ):
     """Actualiza el estado de un reporte (RESOLVED, DISMISSED, etc)."""
     # Verificar que el reporte existe y pertenece al guild
-    reports = db.get_reports(guild_id)
-    report = next((r for r in reports if int(r["id"]) == report_id), None)
-    if not report:
+    report = db.get_report(report_id)
+    if not report or int(report["guild_id"]) != guild_id:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Reporte #{report_id} no encontrado en este servidor",

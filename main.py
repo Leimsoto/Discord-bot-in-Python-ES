@@ -86,9 +86,9 @@ class TortuguBot(commands.Bot):
             if hasattr(self, 'db'):
                 try:
                     open_tickets = self.db.count_all_open_tickets()
+                    self.db.update_bot_stats(members_online, total_members, open_tickets, uptime_seconds)
                 except Exception:
                     pass
-                self.db.update_bot_stats(members_online, total_members, open_tickets, uptime_seconds)
 
         @bot_stats_updater.before_loop
         async def before_bot_stats_updater():

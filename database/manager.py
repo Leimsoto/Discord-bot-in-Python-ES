@@ -354,6 +354,35 @@ CREATE INDEX IF NOT EXISTS idx_rep_guild   ON reports(guild_id, status);
 CREATE INDEX IF NOT EXISTS idx_sched_guild ON scheduled_messages(guild_id, enabled);
 CREATE INDEX IF NOT EXISTS idx_ul_guild    ON user_levels(guild_id, xp);
 CREATE INDEX IF NOT EXISTS idx_lr_guild    ON level_rewards(guild_id);
+
+CREATE TABLE IF NOT EXISTS custom_commands (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id      INTEGER NOT NULL,
+    name          TEXT NOT NULL,
+    enabled       INTEGER DEFAULT 1,
+    trigger_type  TEXT NOT NULL,
+    trigger_value TEXT NOT NULL,
+    conditions    TEXT DEFAULT '{}',
+    actions       TEXT DEFAULT '[]',
+    creator_id    INTEGER NOT NULL,
+    created_at    TEXT NOT NULL,
+    uses          INTEGER DEFAULT 0,
+    last_used     TEXT,
+    UNIQUE(guild_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS cc_variables (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id  INTEGER NOT NULL,
+    key       TEXT NOT NULL,
+    value     TEXT DEFAULT '0',
+    scope     TEXT DEFAULT 'guild',
+    UNIQUE(guild_id, key, scope)
+);
+
+CREATE INDEX IF NOT EXISTS idx_cc_guild  ON custom_commands(guild_id);
+CREATE INDEX IF NOT EXISTS idx_cc_trigger ON custom_commands(guild_id, trigger_type, enabled);
+CREATE INDEX IF NOT EXISTS idx_ccv_guild ON cc_variables(guild_id);
 """
 
 _SCHEMA_POSTGRESQL = """
@@ -638,6 +667,35 @@ CREATE INDEX IF NOT EXISTS idx_rep_guild   ON reports(guild_id, status);
 CREATE INDEX IF NOT EXISTS idx_sched_guild ON scheduled_messages(guild_id, enabled);
 CREATE INDEX IF NOT EXISTS idx_ul_guild    ON user_levels(guild_id, xp);
 CREATE INDEX IF NOT EXISTS idx_lr_guild    ON level_rewards(guild_id);
+
+CREATE TABLE IF NOT EXISTS custom_commands (
+    id            BIGSERIAL PRIMARY KEY,
+    guild_id      BIGINT NOT NULL,
+    name          TEXT NOT NULL,
+    enabled       SMALLINT DEFAULT 1,
+    trigger_type  TEXT NOT NULL,
+    trigger_value TEXT NOT NULL,
+    conditions    TEXT DEFAULT '{}',
+    actions       TEXT DEFAULT '[]',
+    creator_id    BIGINT NOT NULL,
+    created_at    TEXT NOT NULL,
+    uses          INTEGER DEFAULT 0,
+    last_used     TEXT,
+    UNIQUE(guild_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS cc_variables (
+    id        BIGSERIAL PRIMARY KEY,
+    guild_id  BIGINT NOT NULL,
+    key       TEXT NOT NULL,
+    value     TEXT DEFAULT '0',
+    scope     TEXT DEFAULT 'guild',
+    UNIQUE(guild_id, key, scope)
+);
+
+CREATE INDEX IF NOT EXISTS idx_cc_guild  ON custom_commands(guild_id);
+CREATE INDEX IF NOT EXISTS idx_cc_trigger ON custom_commands(guild_id, trigger_type, enabled);
+CREATE INDEX IF NOT EXISTS idx_ccv_guild ON cc_variables(guild_id);
 """
 
 _SCHEMA_MARIADB = """
@@ -923,6 +981,33 @@ CREATE TABLE IF NOT EXISTS level_rewards (
     role_id  BIGINT NOT NULL,
     PRIMARY KEY (id),
     UNIQUE KEY unique_reward (guild_id, level)
+) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS custom_commands (
+    id            BIGINT NOT NULL AUTO_INCREMENT,
+    guild_id      BIGINT NOT NULL,
+    name          VARCHAR(100) NOT NULL,
+    enabled       TINYINT DEFAULT 1,
+    trigger_type  VARCHAR(50) NOT NULL,
+    trigger_value TEXT NOT NULL,
+    conditions    TEXT,
+    actions       TEXT,
+    creator_id    BIGINT NOT NULL,
+    created_at    VARCHAR(50) NOT NULL,
+    uses          INT DEFAULT 0,
+    last_used     VARCHAR(50),
+    PRIMARY KEY (id),
+    UNIQUE KEY unique_cc (guild_id, name)
+) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS cc_variables (
+    id        BIGINT NOT NULL AUTO_INCREMENT,
+    guild_id  BIGINT NOT NULL,
+    `key`     VARCHAR(100) NOT NULL,
+    value     TEXT,
+    scope     VARCHAR(100) DEFAULT 'guild',
+    PRIMARY KEY (id),
+    UNIQUE KEY unique_ccv (guild_id, `key`, scope)
 ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 """
 
@@ -1863,6 +1948,10 @@ class DatabaseManager:
             return self._fetchall("SELECT * FROM reports WHERE guild_id = ? AND status = ? ORDER BY id DESC", (guild_id, status))
         return self._fetchall("SELECT * FROM reports WHERE guild_id = ? ORDER BY id DESC", (guild_id,))
 
+    def get_report(self, report_id: int) -> Optional[Dict]:
+        """Obtiene un reporte por su ID."""
+        return self._fetchone("SELECT * FROM reports WHERE id = ?", (report_id,))
+
     def update_report(self, report_id: int, **kwargs) -> None:
         valid = frozenset({"status", "ticket_id"})
         invalid = set(kwargs) - valid
@@ -2076,3 +2165,134 @@ class DatabaseManager:
             "SELECT * FROM user_records WHERE guild_id = ? AND warns > 0 ORDER BY warns DESC",
             (guild_id,),
         )
+
+    # ── Custom Commands ───────────────────────────────────────────────────────
+
+    def get_custom_commands(self, guild_id: int) -> List[Dict]:
+        """Retorna todos los custom commands de un servidor."""
+        return self._fetchall(
+            "SELECT * FROM custom_commands WHERE guild_id = ? ORDER BY name ASC",
+            (guild_id,),
+        )
+
+    def get_custom_command(self, guild_id: int, name: str) -> Optional[Dict]:
+        """Obtiene un custom command por nombre."""
+        return self._fetchone(
+            "SELECT * FROM custom_commands WHERE guild_id = ? AND name = ?",
+            (guild_id, name.lower()),
+        )
+
+    def get_custom_command_by_id(self, cc_id: int) -> Optional[Dict]:
+        """Obtiene un custom command por su ID."""
+        return self._fetchone("SELECT * FROM custom_commands WHERE id = ?", (cc_id,))
+
+    def get_enabled_custom_commands(self, guild_id: int, trigger_type: str = None) -> List[Dict]:
+        """Retorna CCs habilitados, opcionalmente filtrados por tipo de trigger."""
+        if trigger_type:
+            return self._fetchall(
+                "SELECT * FROM custom_commands WHERE guild_id = ? AND enabled = 1 AND trigger_type = ?",
+                (guild_id, trigger_type),
+            )
+        return self._fetchall(
+            "SELECT * FROM custom_commands WHERE guild_id = ? AND enabled = 1",
+            (guild_id,),
+        )
+
+    def create_custom_command(self, guild_id: int, name: str, trigger_type: str,
+                               trigger_value: str, conditions: str, actions: str,
+                               creator_id: int) -> Optional[Dict]:
+        """Crea un nuevo custom command y retorna el registro."""
+        now = datetime.now(timezone.utc).isoformat()
+        self._execute(
+            "INSERT INTO custom_commands (guild_id, name, trigger_type, trigger_value, "
+            "conditions, actions, creator_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (guild_id, name.lower(), trigger_type, trigger_value, conditions, actions, creator_id, now),
+        )
+        return self.get_custom_command(guild_id, name)
+
+    def update_custom_command(self, guild_id: int, name: str, **kwargs) -> None:
+        """Actualiza campos de un custom command."""
+        valid = frozenset({
+            "enabled", "trigger_type", "trigger_value", "conditions",
+            "actions", "uses", "last_used",
+        })
+        invalid = set(kwargs) - valid
+        if invalid:
+            raise ValueError(f"Columnas inválidas en custom_commands: {invalid}")
+        ops = [
+            (f"UPDATE custom_commands SET {col} = ? WHERE guild_id = ? AND name = ?",
+             (val, guild_id, name.lower()))
+            for col, val in kwargs.items()
+        ]
+        self._executemany(ops)
+
+    def delete_custom_command(self, guild_id: int, name: str) -> None:
+        """Elimina un custom command."""
+        self._execute(
+            "DELETE FROM custom_commands WHERE guild_id = ? AND name = ?",
+            (guild_id, name.lower()),
+        )
+
+    def increment_cc_uses(self, guild_id: int, name: str) -> None:
+        """Incrementa el contador de usos y actualiza last_used."""
+        now = datetime.now(timezone.utc).isoformat()
+        self._execute(
+            "UPDATE custom_commands SET uses = uses + 1, last_used = ? WHERE guild_id = ? AND name = ?",
+            (now, guild_id, name.lower()),
+        )
+
+    # ── CC Variables (persistentes) ───────────────────────────────────────────
+
+    def get_cc_variable(self, guild_id: int, key: str, scope: str = "guild") -> Optional[str]:
+        """Obtiene el valor de una variable. Retorna None si no existe."""
+        row = self._fetchone(
+            "SELECT value FROM cc_variables WHERE guild_id = ? AND key = ? AND scope = ?",
+            (guild_id, key, scope),
+        )
+        return row["value"] if row else None
+
+    def set_cc_variable(self, guild_id: int, key: str, value: str, scope: str = "guild") -> None:
+        """Crea o actualiza una variable persistente."""
+        if self.db_type == "sqlite":
+            self._execute(
+                "INSERT INTO cc_variables (guild_id, key, value, scope) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(guild_id, key, scope) DO UPDATE SET value = ?",
+                (guild_id, key, value, scope, value),
+            )
+        elif self.db_type == "postgresql":
+            self._execute(
+                "INSERT INTO cc_variables (guild_id, key, value, scope) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT (guild_id, key, scope) DO UPDATE SET value = EXCLUDED.value",
+                (guild_id, key, value, scope),
+            )
+        else:
+            self._execute(
+                "INSERT INTO cc_variables (guild_id, `key`, value, scope) VALUES (?, ?, ?, ?) "
+                "ON DUPLICATE KEY UPDATE value = VALUES(value)",
+                (guild_id, key, value, scope),
+            )
+
+    def get_all_cc_variables(self, guild_id: int) -> List[Dict]:
+        """Retorna todas las variables de un servidor."""
+        return self._fetchall(
+            "SELECT * FROM cc_variables WHERE guild_id = ? ORDER BY key ASC",
+            (guild_id,),
+        )
+
+    def delete_cc_variable(self, guild_id: int, key: str, scope: str = "guild") -> None:
+        """Elimina una variable persistente."""
+        self._execute(
+            "DELETE FROM cc_variables WHERE guild_id = ? AND key = ? AND scope = ?",
+            (guild_id, key, scope),
+        )
+
+    def increment_cc_variable(self, guild_id: int, key: str, amount: int = 1,
+                               scope: str = "guild") -> str:
+        """Incrementa una variable numérica y retorna el nuevo valor."""
+        current = self.get_cc_variable(guild_id, key, scope)
+        try:
+            new_val = str(int(current or "0") + amount)
+        except ValueError:
+            new_val = str(amount)
+        self.set_cc_variable(guild_id, key, new_val, scope)
+        return new_val

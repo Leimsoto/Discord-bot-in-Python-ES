@@ -47,6 +47,12 @@ async def create_schedule(guild_id: int, body: dict, db=Depends(get_db), user=De
 
 @router.put("/{schedule_id}")
 async def update_schedule(guild_id: int, schedule_id: int, body: dict, db=Depends(get_db), _user=Depends(require_guild_admin)):
+    # Verificar que el schedule pertenece a este guild
+    schedules = db.get_schedules(guild_id)
+    sched = next((s for s in schedules if int(s["id"]) == schedule_id), None)
+    if not sched:
+        raise HTTPException(404, f"Schedule #{schedule_id} no encontrado en este servidor")
+
     allowed = {"enabled", "channel_id", "content", "interval_seconds", "last_sent"}
     filtered = {k: v for k, v in body.items() if k in allowed}
     if not filtered:
