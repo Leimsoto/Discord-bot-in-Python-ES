@@ -3,17 +3,15 @@ cogs/ia.py — Módulo de IA para TortuguBot
 ──────────────────────────────────────────
 • Chat con historial por usuario/guild    (Gemini 2.5 Flash-Lite → Flash → Pro)
 • Lectura multimodal en adjuntos          (imágenes, PDFs, audio, vídeo)
-• Generación de imágenes /imagine         (Imagen 3.0)
 • System prompt por guild configurable    (DB o .env como fallback)
 • Rate limiting correcto: 1 slot/REQUEST  (no tokens LLM)
 • Workers con cog_load/cog_unload limpio  (sin task leaks)
-• Backoff exponencial + fallback 3 modelos
+• Backoff exponencial
 • Métricas en memoria + /ai_status
 
-Cadena de modelos free tier (abril 2026):
-  Primario  → gemini-2.5-flash-lite  (15 RPM / 1 000 RPD)
-  Secundario → gemini-2.5-flash      (10 RPM /   250 RPD)
-  Último recurso → gemini-2.5-pro    ( 5 RPM /   100 RPD)
+Modelos soportados (abril 2026):
+  Gemini: gemini-3.1-flash, gemini-3.1-flash-lite
+  Gemma: gemma-4-26b-a4b-it
 
 Variables de entorno:
   GEMINI_API_KEY          — requerida
@@ -50,20 +48,23 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-# ── Modelos (cadena free-tier óptima) ────────────────────────────────────────
-# Orden: velocidad/cuota → calidad
+# ── Modelos ────────────────────────────────────────────────────────────────
+# Opciones disponibles de IA para el usuario
 CHAT_MODELS = [
-    "gemini-2.5-flash-lite",   # primario  – 15 RPM, 1 000 RPD
-    "gemini-2.5-flash",        # secundario – 10 RPM,   250 RPD
-    "gemini-2.5-pro",          # último recurso – 5 RPM, 100 RPD
+    "gemini-3.1-flash",           # Rápido y capaz
+    "gemini-3.1-flash-lite",      # Versión más ligera y rápida
+    "gemma-4-26b-a4b-it",         # Gemma 4 26B
+    "gemma-3-27b-it",             # Gemma 3 27B Instruction Tuned
+    "gemma-4-31b-it",             # Gemma 4 31B Instruction Tuned
 ]
-IMAGEN_MODEL = "imagen-3.0-generate-008"
 
 # Etiquetas legibles para la UI
 _MODEL_LABELS = {
-    "gemini-2.5-flash-lite": "Flash-Lite ⚡ (rápido)",
-    "gemini-2.5-flash":      "Flash 🔥 (equilibrado)",
-    "gemini-2.5-pro":        "Pro 🧠 (potente)",
+    "gemini-3.1-flash":           "Gemini 3.1 Flash 🔥",
+    "gemini-3.1-flash-lite":      "Gemini 3.1 Flash-Lite ⚡",
+    "gemma-4-26b-a4b-it":         "Gemma 4 (26B) 🦙",
+    "gemma-3-27b-it":             "Gemma 3 (27B) 🦙",
+    "gemma-4-31b-it":             "Gemma 4 (31B) 🚀",
 }
 
 # ── MIME types aceptados como adjunto ────────────────────────────────────────
@@ -140,17 +141,6 @@ class IAConfigView(discord.ui.View):
         self.model_btn.callback = self.cycle_model
         self.add_item(self.model_btn)
 
-        # Botón toggle /imagine
-        imagine_on = bool(cfg.get("ai_imagine_enabled", 1))
-        self.imagine_btn = discord.ui.Button(
-            label="Imagen Gen: ✅ ON" if imagine_on else "Imagen Gen: ❌ OFF",
-            style=discord.ButtonStyle.success if imagine_on else discord.ButtonStyle.danger,
-            emoji="🖼️",
-            row=0,
-        )
-        self.imagine_btn.callback = self.toggle_imagine
-        self.add_item(self.imagine_btn)
-
     async def cycle_model(self, interaction: discord.Interaction):
         cfg     = self.cog.db.get_ai_config(self.guild_id)
         current = cfg.get("ai_model", CHAT_MODELS[0])
@@ -158,16 +148,6 @@ class IAConfigView(discord.ui.View):
         new     = CHAT_MODELS[(idx + 1) % len(CHAT_MODELS)]
         self.cog.db.set_ai_config(self.guild_id, ai_model=new)
         self.model_btn.label = f"Modelo: {_MODEL_LABELS.get(new, new)}"
-        embed = self.cog._build_ia_embed(interaction.guild, self.cog.db.get_ai_config(self.guild_id))
-        await interaction.response.edit_message(embed=embed, view=self)
-
-    async def toggle_imagine(self, interaction: discord.Interaction):
-        cfg     = self.cog.db.get_ai_config(self.guild_id)
-        current = bool(cfg.get("ai_imagine_enabled", 1))
-        new_val = 0 if current else 1
-        self.cog.db.set_ai_config(self.guild_id, ai_imagine_enabled=new_val)
-        self.imagine_btn.label  = "Imagen Gen: ✅ ON" if new_val else "Imagen Gen: ❌ OFF"
-        self.imagine_btn.style  = discord.ButtonStyle.success if new_val else discord.ButtonStyle.danger
         embed = self.cog._build_ia_embed(interaction.guild, self.cog.db.get_ai_config(self.guild_id))
         await interaction.response.edit_message(embed=embed, view=self)
 
@@ -227,7 +207,7 @@ class IAConfigView(discord.ui.View):
 #  Cog principal
 # ─────────────────────────────────────────────────────────────────────────────
 class IA(commands.Cog):
-    """Módulo de Inteligencia Artificial – Gemini multimodal + Imagen 3"""
+    """Módulo de Inteligencia Artificial – Gemini multimodal"""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -270,8 +250,8 @@ class IA(commands.Cog):
         # ── Métricas ──────────────────────────────────────────────────────────
         self._metrics: Dict[str, float] = {
             "requests": 0, "success": 0, "retries": 0,
-            "errors_429": 0, "errors_503": 0, "fallbacks": 0,
-            "images_gen": 0, "multimodal": 0,
+            "errors_429": 0, "errors_503": 0,
+            "multimodal": 0,
             "queue_max": 0, "total_latency": 0.0, "latency_count": 0,
         }
 
@@ -327,17 +307,6 @@ class IA(commands.Cog):
             value=f"`{model}`\n_{_MODEL_LABELS.get(model, '')}_",
             inline=True,
         )
-        imagine_on = bool(cfg.get("ai_imagine_enabled", 1))
-        embed.add_field(
-            name="🖼️ /imagine",
-            value="✅ Activado" if imagine_on else "❌ Desactivado",
-            inline=True,
-        )
-        embed.add_field(
-            name="🔗 Cadena de fallback",
-            value=" → ".join(f"`{m}`" for m in CHAT_MODELS),
-            inline=False,
-        )
         sys_prompt = cfg.get("ai_system_prompt")
         embed.add_field(
             name="📝 System Prompt",
@@ -345,14 +314,14 @@ class IA(commands.Cog):
                    else (f"_{sys_prompt}_" if sys_prompt else "_Global (.env)_")),
             inline=False,
         )
-        embed.set_footer(text=f"Imagen Gen: {IMAGEN_MODEL}  •  Multimedia: img/pdf/audio/video")
+        embed.set_footer(text="Multimedia: img/pdf/audio/video")
         return embed
 
-    def _get_system_prompt(self, guild_id: int) -> str:
+    def _get_system_prompt(self, guild: discord.Guild) -> str:
         """
         Prioridad: 1) prompt por guild (DB)  2) .env  3) default hardcoded
         """
-        cfg        = self.db.get_ai_config(guild_id)
+        cfg        = self.db.get_ai_config(guild.id)
         guild_prompt = cfg.get("ai_system_prompt")
         if guild_prompt and guild_prompt.strip():
             base = guild_prompt.strip()
@@ -363,10 +332,63 @@ class IA(commands.Cog):
                 "Puedes analizar imágenes, documentos PDF, audio y vídeo que te compartan. "
                 "Si necesitas información actual usa Google Search.",
             )
-        ctx = self._server_contexts.get(guild_id)
+        
+        ctx = self._server_contexts.get(guild.id)
+        if not ctx:
+            ctx = self._generate_server_context(guild)
+            self._server_contexts[guild.id] = ctx
+            
         if ctx:
-            base += f"\n\nContexto del servidor:\n{ctx}"
+            base += f"\n\n{ctx}"
         return base
+
+    def _generate_server_context(self, g: discord.Guild) -> str:
+        owner = g.owner
+        roles_list = [r for r in reversed(g.roles) if r.name != "@everyone"][:20]
+        
+        def is_public(channel) -> bool:
+            # Evalúa si el canal es visible para el rol @everyone
+            default_role = g.default_role
+            overwrite = channel.overwrites_for(default_role)
+            if overwrite.view_channel is False:
+                return False
+            if overwrite.view_channel is True:
+                return True
+            return default_role.permissions.view_channel
+
+        public_text_channels = [c for c in g.text_channels if is_public(c)]
+        public_voice_channels = [c for c in g.voice_channels if is_public(c)]
+        
+        parts = [
+            "=== INFORMACIÓN DEL SERVIDOR (CONTEXTO) ===",
+            f"Nombre del servidor: {g.name}",
+            f"Descripción: {g.description or 'Ninguna'}",
+            f"Cantidad de miembros: {g.member_count}",
+            f"Dueño del servidor: {owner.display_name if owner else 'Desconocido'} " + (f"(Mención: <@{owner.id}>)" if owner else ""),
+            
+            "\n--- Canales de Texto ---",
+            "IMPORTANTE: Para referirte a un canal de forma clickeable, DEBES usar su Mención exacta, ej: <#123456789>.",
+            *[
+                f"• #{c.name} -> Mención: <#{c.id}>" + (f" | Tema: {c.topic}" if c.topic else "")
+                for c in public_text_channels[:30]
+            ],
+            
+            "\n--- Canales de Voz ---",
+            *[
+                f"• 🔊 {c.name} -> Mención: <#{c.id}>"
+                for c in public_voice_channels[:10]
+            ],
+            
+            "\n--- Roles Principales ---",
+            "IMPORTANTE: Para mencionar a un rol, DEBES usar el formato <@&ID>.",
+            *[f"• {r.name} -> Mención: <@&{r.id}>" for r in roles_list],
+            
+            "\n--- Emojis del Servidor ---",
+            "Puedes adornar tus respuestas usando estos emojis exactamente con el formato mostrado:",
+            " ".join([f"{str(e)}" for e in g.emojis[:40]]) if g.emojis else "Ninguno",
+            "==========================================="
+        ]
+        return "\n".join(parts)
 
     # ── Rate limiter (1 slot por request) ─────────────────────────────────────
 
@@ -441,7 +463,7 @@ class IA(commands.Cog):
             parts.append(types.Part.from_text(text="[Mensaje sin contenido]"))
         return parts
 
-    # ── Generación con reintentos y fallback ──────────────────────────────────
+    # ── Generación con reintentos ─────────────────────────────────────────────
 
     async def _generate_with_retries(
         self,
@@ -450,14 +472,10 @@ class IA(commands.Cog):
         config,
         retries: int = 3,
         backoff_base: float = 1.5,
-        fallback_models: Optional[List[str]] = None,
     ):
         """
         Llama a Gemini con reintentos exponenciales por modelo.
-        429 → marca modelo en backoff y salta al siguiente INMEDIATAMENTE.
-        503 → reintenta el mismo modelo con backoff.
         """
-        fallback_models = fallback_models or []
         last_exc: Optional[BaseException] = None
 
         def _extract_retry_delay(err) -> Optional[float]:
@@ -474,7 +492,7 @@ class IA(commands.Cog):
                 pass
             return None
 
-        models_to_try = [model] + [m for m in (fallback_models or []) if m != model]
+        models_to_try = [model]
 
         for current_model in models_to_try:
             # Respetar backoff del modelo
@@ -497,9 +515,6 @@ class IA(commands.Cog):
                             config=config,
                         )
                         self._inc("success")
-                        if current_model != model:
-                            self._inc("fallbacks")
-                            logger.info(f"Fallback exitoso: {model} → {current_model}")
                         return resp
 
                     except Exception as e:
@@ -518,10 +533,9 @@ class IA(commands.Cog):
                             delay = _extract_retry_delay(e) or (backoff_base ** retry * 10)
                             self._model_backoff[current_model] = monotonic() + delay
                             logger.warning(
-                                f"429 en {current_model} – backoff {delay:.0f}s, "
-                                f"saltando al siguiente modelo."
+                                f"429 en {current_model} – backoff {delay:.0f}s."
                             )
-                            break   # ← NO reintentar este modelo, pasar al siguiente
+                            break
 
                         if is_503:
                             self._inc("errors_503")
@@ -532,11 +546,11 @@ class IA(commands.Cog):
                                 continue
                             break
 
-                        # Error no retriable (validación, seguridad, etc.)
+                        # Error no retriable
                         logger.error(f"Error no retriable en {current_model}: {e}")
                         break
 
-        raise last_exc or RuntimeError("Todos los modelos de chat fallaron.")
+        raise last_exc or RuntimeError("La generación falló.")
 
     # ── Envío de respuesta ────────────────────────────────────────────────────
 
@@ -583,7 +597,6 @@ class IA(commands.Cog):
         message:       discord.Message = job["message"]
         ctx_id:        str             = job["ctx_id"]
         config                         = job["config"]
-        fallback:      List[str]       = job["fallback"]
         is_ai_channel: bool            = job["is_ai_channel"]
         user_parts:    list            = job["user_parts"]
 
@@ -600,16 +613,12 @@ class IA(commands.Cog):
 
         # Elegir modelo disponible (respetando backoff individual)
         model_pref = self.db.get_ai_config(message.guild.id).get("ai_model", CHAT_MODELS[0])
-        # Construir orden: modelo configurado primero, resto de cadena después
-        chain = [model_pref] + [m for m in CHAT_MODELS if m != model_pref]
-        chosen = next(
-            (m for m in chain if self._model_backoff.get(m, 0.0) < monotonic()),
-            None,
-        )
+        chosen = model_pref if self._model_backoff.get(model_pref, 0.0) < monotonic() else None
+
         if not chosen:
             try:
                 await message.channel.send(
-                    "❌ Todos los modelos están temporalmente limitados. Intenta más tarde."
+                    "❌ Modelo temporalmente limitado. Intenta más tarde."
                 )
             except Exception:
                 pass
@@ -633,7 +642,6 @@ class IA(commands.Cog):
                     model=chosen,
                     contents=contents,
                     config=config,
-                    fallback_models=[m for m in chain if m != chosen],
                 )
                 self._inc("total_latency", monotonic() - t0)
                 self._inc("latency_count")
@@ -715,20 +723,17 @@ class IA(commands.Cog):
             user_parts = [types.Part.from_text(text=user_text or "[mensaje vacío]")]
 
         ctx_id = f"{message.guild.id}_{message.author.id}"
-        model  = cfg.get("ai_model", CHAT_MODELS[0])
 
         config = types.GenerateContentConfig(
-            system_instruction=self._get_system_prompt(message.guild.id),
+            system_instruction=self._get_system_prompt(message.guild),
             temperature=0.7,
             tools=[types.Tool(google_search=types.GoogleSearch())],
         )
-        fallback = [m for m in CHAT_MODELS if m != model]
 
         job = {
             "message":       message,
             "ctx_id":        ctx_id,
             "config":        config,
-            "fallback":      fallback,
             "is_ai_channel": is_ai_channel,
             "user_parts":    user_parts,
         }
@@ -764,7 +769,7 @@ class IA(commands.Cog):
 
     @app_commands.command(
         name="iasync",
-        description="Sincroniza el contexto del servidor para darle contexto a la IA",
+        description="Sincroniza y actualiza el contexto del servidor (canales, roles, emojis) para la IA",
     )
     @app_commands.checks.has_permissions(administrator=True)
     async def iasync(self, interaction: discord.Interaction):
@@ -774,21 +779,13 @@ class IA(commands.Cog):
             )
         await interaction.response.defer(ephemeral=True)
         g = interaction.guild
-        parts = [
-            f"Servidor: {g.name}",
-            f"Descripción: {g.description or 'Ninguna'}",
-            f"Miembros: {g.member_count}",
-            "\n--- Canales de texto ---",
-            *[
-                f"#{c.name}" + (f" – {c.topic}" if c.topic else "")
-                for c in g.text_channels[:20]
-            ],
-            "\n--- Roles principales ---",
-            *[f"- {r.name}" for r in reversed(g.roles[1:15])],
-        ]
-        self._server_contexts[g.id] = "\n".join(parts)
+        
+        # Forzamos la regeneración del contexto
+        ctx = self._generate_server_context(g)
+        self._server_contexts[g.id] = ctx
+        
         await interaction.followup.send(
-            "✅ Contexto del servidor sincronizado y cargado en memoria para la IA."
+            "✅ Contexto del servidor ampliado y sincronizado. La IA ahora conoce automáticamente los IDs de canales para mencionarlos, roles, emojis y más."
         )
 
     @app_commands.command(name="ai_status", description="Métricas y estado del servicio IA")
@@ -805,11 +802,9 @@ class IA(commands.Cog):
             ("Requests totales",     str(int(m["requests"]))),
             ("Respuestas OK",        str(int(m["success"]))),
             ("Reintentos (503)",     str(int(m["retries"]))),
-            ("Fallbacks usados",     str(int(m["fallbacks"]))),
             ("Errores 429",          str(int(m["errors_429"]))),
             ("Errores 503",          str(int(m["errors_503"]))),
             ("Adjuntos procesados",  str(int(m["multimodal"]))),
-            ("Imágenes generadas",   str(int(m["images_gen"]))),
             ("Latency avg",          f"{avg_lat:.2f}s"),
             ("Concurrencia",         str(self._concurrency)),
             ("Rate (req/periodo)",   f"{self._rate_cap}/{self._rate_period:.0f}s"),
@@ -839,70 +834,7 @@ class IA(commands.Cog):
         )
         await interaction.followup.send(embed=embed, ephemeral=True)
 
-    @app_commands.command(
-        name="imagine",
-        description="Genera una imagen con IA a partir de una descripción",
-    )
-    @app_commands.describe(prompt="Descripción de la imagen que quieres generar")
-    async def imagine(self, interaction: discord.Interaction, prompt: str):
-        if not self.client:
-            return await interaction.response.send_message(
-                "❌ API de Gemini no configurada.", ephemeral=True
-            )
 
-        # Verificar si /imagine está habilitado en este guild
-        cfg = self.db.get_ai_config(interaction.guild_id)
-        if not cfg.get("ai_imagine_enabled", 1):
-            return await interaction.response.send_message(
-                "❌ La generación de imágenes está desactivada en este servidor.",
-                ephemeral=True,
-            )
-
-        await interaction.response.defer()
-
-        try:
-            response = await asyncio.to_thread(
-                self.client.models.generate_images,
-                model=IMAGEN_MODEL,
-                prompt=prompt,
-                config=types.GenerateImagesConfig(
-                    number_of_images=1,
-                    output_mime_type="image/png",
-                ),
-            )
-
-            if not response.generated_images:
-                return await interaction.followup.send(
-                    "❌ No se generó ninguna imagen. Prueba con otro prompt."
-                )
-
-            img_bytes = response.generated_images[0].image.image_bytes
-            file  = discord.File(io.BytesIO(img_bytes), filename="imagen.png")
-            embed = discord.Embed(
-                title="🖼️ Imagen generada",
-                description=f"**Prompt:** {prompt[:300]}",
-                color=discord.Color.purple(),
-            )
-            embed.set_image(url="attachment://imagen.png")
-            embed.set_footer(text=f"Modelo: {IMAGEN_MODEL}")
-            await interaction.followup.send(embed=embed, file=file)
-            self._inc("images_gen")
-
-        except Exception as e:
-            logger.error(f"Error generando imagen: {e}", exc_info=True)
-            msg = str(e).lower()
-            if "safety" in msg or "blocked" in msg or "policy" in msg:
-                reply = "❌ Prompt bloqueado por políticas de contenido. Intenta otra descripción."
-            elif "429" in msg or "quota" in msg or "resource_exhausted" in msg:
-                reply = "❌ Límite de generación de imágenes alcanzado. Intenta en unos minutos."
-            elif "not found" in msg or "not supported" in msg:
-                reply = (
-                    f"❌ Modelo `{IMAGEN_MODEL}` no disponible en tu plan. "
-                    "Verifica el acceso en Google AI Studio."
-                )
-            else:
-                reply = "❌ Error al generar la imagen."
-            await interaction.followup.send(reply)
 
     @app_commands.command(name="iaclear", description="Borra tu historial de conversación con la IA")
     async def iaclear(self, interaction: discord.Interaction):

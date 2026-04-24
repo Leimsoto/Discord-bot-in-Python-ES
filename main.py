@@ -69,6 +69,15 @@ class TortuguBot(commands.Bot):
         Llamado automáticamente antes de conectar al WebSocket.
         Carga los cogs y sincroniza los comandos slash.
         """
+        # Ignorar errores de ClientConnectionResetError en tareas en background (ej. discord.py voice)
+        def custom_exception_handler(loop, context):
+            exception = context.get('exception')
+            if exception and type(exception).__name__ == "ClientConnectionResetError":
+                return
+            loop.default_exception_handler(context)
+        
+        self.loop.set_exception_handler(custom_exception_handler)
+
         from discord.ext import tasks
         
         @tasks.loop(seconds=30)
@@ -95,6 +104,7 @@ class TortuguBot(commands.Bot):
             await self.wait_until_ready()
 
         bot_stats_updater.start()
+        self.tree.on_error = self.on_app_command_error
 
         cogs = [
             "cogs.moderation",

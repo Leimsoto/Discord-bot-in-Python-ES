@@ -30,7 +30,10 @@ class Radio(commands.Cog):
             if not cfg.get("enabled"):
                 vc = guild.voice_client
                 if vc:
-                    await vc.disconnect(force=True)
+                    try:
+                        await vc.disconnect()
+                    except Exception:
+                        pass
                 continue
 
             channel_id = cfg.get("channel_id")
@@ -64,8 +67,8 @@ class Radio(commands.Cog):
         await self.bot.wait_until_ready()
 
     def start_playing(self, vc, channel, cfg):
-        stream_url = cfg.get("stream_url", LOFI_STREAM_URL)
-        station_name = cfg.get("station_name", "Lofi Radio 24/7")
+        stream_url = cfg.get("stream_url") or LOFI_STREAM_URL
+        station_name = cfg.get("station_name") or "Lofi Radio 24/7"
 
         try:
             import shutil
@@ -113,13 +116,26 @@ class Radio(commands.Cog):
         Método síncrono pensado para ejecutarse en executor y no bloquear el loop.
         """
         try:
-            r = requests.get(url, timeout=6)
-            content_type = r.headers.get("content-type", "").lower()
-            text = r.text
-            if url.lower().endswith(('.m3u', '.m3u8', '.pls')) or text.strip().startswith('#') or '[playlist]' in text.lower() or 'audio/x-scpls' in content_type:
-                lines = [l.strip() for l in text.splitlines() if l and not l.strip().startswith('#') and not l.strip().startswith('[')]
-                if lines:
-                    return lines[0]
+            with requests.get(url, stream=True, timeout=5) as r:
+                content_type = r.headers.get("content-type", "").lower()
+                
+                is_playlist = url.lower().endswith(('.m3u', '.m3u8', '.pls')) or 'scpls' in content_type or 'mpegurl' in content_type
+                
+                # Si no parece una playlist, devolver la URL original y que FFmpeg se encargue
+                if not is_playlist:
+                    return url
+                
+                # Leemos solo el primer chunk de 4KB para evitar bloquear la memoria
+                chunk = next(r.iter_content(chunk_size=4096, decode_unicode=True), "")
+                if isinstance(chunk, bytes):
+                    chunk = chunk.decode('utf-8', errors='ignore')
+                
+                lines = [l.strip() for l in chunk.splitlines() if l and not l.strip().startswith('#') and not l.strip().startswith('[')]
+                for line in lines:
+                    if line.lower().startswith("file1="):
+                        return line.split("=", 1)[1].strip()
+                    elif line.startswith("http"):
+                        return line
         except Exception:
             pass
         return url
@@ -142,6 +158,7 @@ class Radio(commands.Cog):
     )
     @app_commands.checks.has_permissions(administrator=True)
     async def setup_radio(self, interaction: discord.Interaction, canal: discord.VoiceChannel, estado: bool):
+        await interaction.response.defer(ephemeral=True)
         self.db.set_lofi_config(
             interaction.guild_id,
             channel_id=canal.id,
@@ -149,21 +166,25 @@ class Radio(commands.Cog):
         )
 
         if estado:
-            await interaction.response.send_message(f"📻 **Radio** activada en {canal.mention}. El bot se conectará en breve.", ephemeral=True)
+            await interaction.followup.send(f"📻 **Radio** activada en {canal.mention}. El bot se conectará en breve.", ephemeral=True)
             vc = interaction.guild.voice_client
             if vc and vc.channel.id != canal.id:
                 await vc.move_to(canal)
         else:
-            await interaction.response.send_message("📻 **Radio** desactivada.", ephemeral=True)
+            await interaction.followup.send("📻 **Radio** desactivada.", ephemeral=True)
             vc = interaction.guild.voice_client
             if vc:
-                await vc.disconnect(force=True)
+                try:
+                    await vc.disconnect()
+                except Exception:
+                    pass
 
     @radio_group.command(name="status", description="Consulta el estado y configuración actual de la radio")
     async def radio_status(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
         cfg = self.db.get_lofi_config(interaction.guild_id)
         if not cfg.get("enabled"):
-            return await interaction.response.send_message("❌ La radio está desactivada en este servidor.", ephemeral=True)
+            return await interaction.followup.send("❌ La radio está desactivada en este servidor.", ephemeral=True)
 
         canal = interaction.guild.get_channel(cfg["channel_id"])
         vc = interaction.guild.voice_client
@@ -176,7 +197,7 @@ class Radio(commands.Cog):
         embed.add_field(name="Canal", value=canal.mention if canal else "No encontrado", inline=True)
         embed.add_field(name="Estado", value=status_text, inline=True)
 
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     @radio_group.command(name="restart", description="Fuerza la reconexión y reinicio del stream de radio")
     @app_commands.checks.has_permissions(administrator=True)
@@ -258,7 +279,7 @@ class Radio(commands.Cog):
 
                     idx = int(self.values[0])
                     station = self.stations[idx]
-                    url = station.get("url_resolved")
+                    url = station.get("url_resolved") or station.get("url")
                     name = station.get("name", "Desconocida")
 
                     # Resolver playlists fuera del loop
@@ -298,17 +319,22 @@ class Radio(commands.Cog):
                     try:
                         if not vc or not vc.is_connected():
                             vc = await channel.connect(reconnect=True)
+                            await asyncio.sleep(self.cog._playback_wait)
+                            self.cog.start_playing(vc, channel, cfg)
                         else:
-                            if vc.is_playing():
+                            is_playing = vc.is_playing()
+                            if is_playing:
                                 vc.stop()
+                            
                             if vc.channel.id != channel.id:
                                 try:
                                     await vc.move_to(channel)
                                 except Exception:
                                     pass
-
-                        await asyncio.sleep(self.cog._playback_wait)
-                        self.cog.start_playing(vc, channel, cfg)
+                                    
+                            if not is_playing:
+                                await asyncio.sleep(self.cog._playback_wait)
+                                self.cog.start_playing(vc, channel, cfg)
 
                     except Exception as e:
                         logger.exception(f"Error aplicando emisora en {inter.guild.name}: {e}")
