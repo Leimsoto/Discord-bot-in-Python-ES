@@ -43,7 +43,7 @@ export default function Levels({ selectedGuild: guildId }) {
     setCfg((p) => ({ ...p, [k]: v }));
     setDirty(true);
   };
-  const setId = (k) => (v) => set(k, v ? parseInt(v, 10) : null);
+  const setId = (k) => (v) => set(k, v ? String(v) : null);
 
   const save = async () => {
     setSaving(true);
@@ -78,7 +78,7 @@ export default function Levels({ selectedGuild: guildId }) {
     try {
       await apiPost(`/api/guilds/${guildId}/levels/rewards`, {
         level: parseInt(newReward.level),
-        role_id: parseInt(newReward.role_id)});
+        role_id: String(newReward.role_id)});
       setNewReward({ level: "", role_id: "" });
       const data = await apiGet(`/api/guilds/${guildId}/levels`, {
         cache: false});

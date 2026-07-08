@@ -110,7 +110,7 @@ class AutoRoles(commands.Cog):
         matched_role_id = None
         for k in keys_to_try:
             if k in mapping:
-                matched_role_id = mapping[k]
+                matched_role_id = int(mapping[k])
                 break
 
         if matched_role_id:
@@ -145,7 +145,7 @@ class AutoRoles(commands.Cog):
         matched_role_id = None
         for k in keys_to_try:
             if k in mapping:
-                matched_role_id = mapping[k]
+                matched_role_id = int(mapping[k])
                 break
 
         if matched_role_id:

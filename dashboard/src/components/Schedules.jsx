@@ -134,7 +134,7 @@ export default function Schedules({ selectedGuild, onToast }) {
     setForm({
       id: s.id,
       name: s.name,
-      channel_id: s.channel_id ? Number(s.channel_id) : null,
+      channel_id: s.channel_id ? String(s.channel_id) : null,
       mode: (s.schedule_mode || "interval").toLowerCase(),
       interval_seconds: Number(s.interval_seconds) || 3600,
       custom_interval_min: "",
@@ -174,7 +174,7 @@ export default function Schedules({ selectedGuild, onToast }) {
     if (!hasContent) return toast("error", "El mensaje no puede estar vacío");
 
     const payload = {
-      channel_id: Number(form.channel_id),
+      channel_id: String(form.channel_id),
       schedule_mode: form.mode,
       message_data: JSON.stringify(msg),
       content: msg.content || "",
@@ -300,7 +300,7 @@ export default function Schedules({ selectedGuild, onToast }) {
               <label>Canal destino</label>
               <SearchableSelect
                 value={form.channel_id}
-                onChange={(v) => setF("channel_id", v ? Number(v) : null)}
+                onChange={(v) => setF("channel_id", v ? String(v) : null)}
                 endpoint={`/api/guilds/${guildId}/channels?type=text`}
                 itemsKey="channels"
                 placeholder="Seleccionar canal…"

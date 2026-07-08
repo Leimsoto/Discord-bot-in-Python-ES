@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
 from api.deps import get_db, require_guild_admin
+from api.snowflakes import coerce_snowflake, serialize_snowflake
 
 router = APIRouter(prefix="/api/guilds/{guild_id}/giveaways", tags=["giveaways"])
 
@@ -27,12 +28,12 @@ router = APIRouter(prefix="/api/guilds/{guild_id}/giveaways", tags=["giveaways"]
 # ── Schemas ──────────────────────────────────────────────────────────────────
 
 class GiveawayCreate(BaseModel):
-    channel_id:     int
+    channel_id:     int | str
     prize:          str
     duration_hours: float = 1.0
     winners_count:  int   = Field(1, ge=1, le=50)
-    req_roles:      List[int] = Field(default_factory=list)
-    deny_roles:     List[int] = Field(default_factory=list)
+    req_roles:      List[int | str] = Field(default_factory=list)
+    deny_roles:     List[int | str] = Field(default_factory=list)
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -47,17 +48,20 @@ def _enrich(gw: dict) -> dict:
     out["entries"] = len(parts)
 
     try:
-        out["req_roles"] = json.loads(out.get("req_roles") or "[]")
+        out["req_roles"] = [serialize_snowflake(x) for x in json.loads(out.get("req_roles") or "[]")]
     except Exception:
         out["req_roles"] = []
     try:
-        out["deny_roles"] = json.loads(out.get("deny_roles") or "[]")
+        out["deny_roles"] = [serialize_snowflake(x) for x in json.loads(out.get("deny_roles") or "[]")]
     except Exception:
         out["deny_roles"] = []
     try:
-        out["winners"] = json.loads(out.get("winners") or "[]")
+        out["winners"] = [serialize_snowflake(x) for x in json.loads(out.get("winners") or "[]")]
     except Exception:
         out["winners"] = []
+    for key in ("guild_id", "channel_id", "message_id"):
+        if key in out:
+            out[key] = serialize_snowflake(out.get(key))
 
     if int(out.get("cancelled") or 0):
         out["status"] = "cancelled"
@@ -80,7 +84,7 @@ async def list_giveaways(
     """Lista sorteos del servidor con campos derivados (status, entries)."""
     rows = db.get_guild_giveaways(guild_id, active_only=active_only)
     enriched = [_enrich(r) for r in rows]
-    return {"guild_id": guild_id, "giveaways": enriched, "count": len(enriched)}
+    return {"guild_id": serialize_snowflake(guild_id), "giveaways": enriched, "count": len(enriched)}
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
@@ -100,7 +104,10 @@ async def create_giveaway(
     if not guild:
         raise HTTPException(404, "Servidor no encontrado")
 
-    channel = guild.get_channel(body.channel_id)
+    channel_id = coerce_snowflake(body.channel_id, "channel_id")
+    req_roles = [coerce_snowflake(role_id, "req_roles") for role_id in body.req_roles]
+    deny_roles = [coerce_snowflake(role_id, "deny_roles") for role_id in body.deny_roles]
+    channel = guild.get_channel(channel_id)
     if not channel or not isinstance(channel, discord.TextChannel):
         raise HTTPException(404, "Canal de texto no encontrado")
 
@@ -115,11 +122,11 @@ async def create_giveaway(
         f"Ganadores: **{body.winners_count}**",
         f"Finaliza: <t:{end_ts}:R> (<t:{end_ts}:f>)",
     ]
-    if body.req_roles:
-        mentions = " · ".join(f"<@&{r}>" for r in body.req_roles)
+    if req_roles:
+        mentions = " · ".join(f"<@&{r}>" for r in req_roles)
         desc_lines.append(f"Requeridos: {mentions}")
-    if body.deny_roles:
-        mentions = " · ".join(f"<@&{r}>" for r in body.deny_roles)
+    if deny_roles:
+        mentions = " · ".join(f"<@&{r}>" for r in deny_roles)
         desc_lines.append(f"Denegados: {mentions}")
 
     embed = discord.Embed(
@@ -142,19 +149,19 @@ async def create_giveaway(
 
     db.create_giveaway(
         guild_id=guild_id,
-        channel_id=body.channel_id,
+        channel_id=channel_id,
         message_id=msg.id,
         prize=body.prize,
         end_time=end_ts,
         winners_count=body.winners_count,
-        req_roles=json.dumps(body.req_roles),
-        deny_roles=json.dumps(body.deny_roles),
+        req_roles=json.dumps(req_roles),
+        deny_roles=json.dumps(deny_roles),
     )
 
     return {
         "status": "created",
-        "message_id": msg.id,
-        "channel_id": body.channel_id,
+        "message_id": serialize_snowflake(msg.id),
+        "channel_id": serialize_snowflake(channel_id),
         "ends_at": end_ts,
         "prize": body.prize,
     }
@@ -171,7 +178,7 @@ async def get_giveaway(
     gw = db.get_giveaway(message_id)
     if not gw or int(gw.get("guild_id", 0)) != guild_id:
         raise HTTPException(404, "Sorteo no encontrado en este servidor")
-    return {"guild_id": guild_id, "giveaway": _enrich(gw)}
+    return {"guild_id": serialize_snowflake(guild_id), "giveaway": _enrich(gw)}
 
 
 @router.delete("/{message_id}", status_code=status.HTTP_200_OK)
@@ -216,7 +223,7 @@ async def cancel_giveaway(
                 except Exception:
                     pass
 
-    return {"status": "cancelled", "message_id": message_id}
+    return {"status": "cancelled", "message_id": serialize_snowflake(message_id)}
 
 
 @router.post("/{message_id}/reroll", status_code=status.HTTP_200_OK)
@@ -247,4 +254,4 @@ async def reroll_giveaway(
     if not winners_ids:
         raise HTTPException(400, "No hubo participantes para reroll")
 
-    return {"status": "ok", "message_id": message_id, "winners": winners_ids}
+    return {"status": "ok", "message_id": serialize_snowflake(message_id), "winners": [serialize_snowflake(x) for x in winners_ids]}

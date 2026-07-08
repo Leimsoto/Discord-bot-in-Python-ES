@@ -39,6 +39,19 @@ DEFAULT_LOG_EVENTS = {
     "reactions": False,
 }
 
+DASHBOARD_LOG_KEYS = {
+    "message_edit",
+    "message_delete",
+    "member_join",
+    "member_leave",
+    "member_ban",
+    "voice_join",
+    "voice_leave",
+    "channel_create",
+    "channel_delete",
+    "role_change",
+}
+
 
 class ServerUtils(commands.Cog):
     """Información del servidor, configuración global y sistema de logs."""
@@ -54,12 +67,72 @@ class ServerUtils(commands.Cog):
             try:
                 raw_events = json.loads(cfg["log_events"])
                 if isinstance(raw_events, dict):
-                    events.update({key: bool(value) for key, value in raw_events.items() if key in DEFAULT_LOG_EVENTS})
+                    if any(key in raw_events for key in DASHBOARD_LOG_KEYS):
+                        # Si el dashboard ya guardó su esquema nuevo, no mantener
+                        # defaults legacy activos, porque eso hace que ServerUtils
+                        # ignore toggles apagados desde el panel.
+                        events = {key: False for key in DEFAULT_LOG_EVENTS}
+                        events["message_delete"] = bool(raw_events.get("message_delete"))
+                        events["message_edit"] = bool(raw_events.get("message_edit"))
+                        events["member_join"] = bool(raw_events.get("member_join"))
+                        events["member_leave"] = bool(raw_events.get("member_leave"))
+                        events["voice_join_leave"] = bool(
+                            raw_events.get("voice_join") or raw_events.get("voice_leave") or raw_events.get("voice_join_leave")
+                        )
+                        events["role_changes"] = bool(raw_events.get("role_change") or raw_events.get("role_changes"))
+                        events["nickname_changes"] = bool(raw_events.get("nickname_changes"))
+                        events["channel_updates"] = bool(raw_events.get("channel_update") or raw_events.get("channel_updates"))
+                    else:
+                        events.update({key: bool(value) for key, value in raw_events.items() if key in DEFAULT_LOG_EVENTS})
                 else:
                     logger.warning("log_events inválido en guild %s: no es un objeto JSON", guild_id)
             except json.JSONDecodeError:
                 logger.warning("log_events contiene JSON inválido en guild %s", guild_id)
         return events
+
+    def _nearby_messageable_channel(self, guild: discord.Guild, channel_id: int):
+        """Encuentra un único canal enviable cercano a un snowflake redondeado por JS."""
+        candidates = []
+        for channel in getattr(guild, "channels", []):
+            try:
+                candidate_id = int(getattr(channel, "id"))
+            except (TypeError, ValueError):
+                continue
+            if callable(getattr(channel, "send", None)) and abs(candidate_id - int(channel_id)) <= 4096:
+                candidates.append(channel)
+        return candidates[0] if len(candidates) == 1 else None
+
+    async def _resolve_serverlog_channel(self, guild: discord.Guild, raw_channel_id):
+        try:
+            channel_id = int(raw_channel_id)
+        except (TypeError, ValueError):
+            return None, raw_channel_id, "invalid_channel_id"
+
+        channel = guild.get_channel(channel_id)
+        if callable(getattr(channel, "send", None)):
+            return channel, int(channel.id), None
+
+        repaired = self._nearby_messageable_channel(guild, channel_id)
+        if repaired is not None:
+            logger.warning(
+                "serverlog_channel redondeado reparado en %s: %s -> %s",
+                guild.name,
+                channel_id,
+                repaired.id,
+            )
+            try:
+                self.db.set_server_config(guild.id, serverlog_channel=int(repaired.id))
+            except Exception:
+                logger.debug("No se pudo persistir serverlog_channel reparado", exc_info=True)
+            return repaired, int(repaired.id), None
+
+        try:
+            fetched = await guild.fetch_channel(channel_id)
+            if callable(getattr(fetched, "send", None)):
+                return fetched, int(getattr(fetched, "id", channel_id)), None
+            return fetched, channel_id, "target_is_not_messageable"
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException) as exc:
+            return None, channel_id, str(exc)
 
     async def _send_server_log(self, guild: discord.Guild, embed: discord.Embed) -> None:
         cfg = self.db.get_server_config(guild.id)
@@ -70,17 +143,42 @@ class ServerUtils(commands.Cog):
         if not ch_id:
             return
 
-        channel = guild.get_channel(ch_id)
-        if not isinstance(channel, discord.TextChannel):
-            logger.warning("Canal de serverlog inválido o no accesible en %s (%s)", guild.name, ch_id)
+        channel, resolved_ch_id, resolve_error = await self._resolve_serverlog_channel(guild, ch_id)
+        send = getattr(channel, "send", None)
+        if channel is None or not callable(send):
+            logger.warning("Canal de serverlog inválido o no accesible en %s (%s): %s", guild.name, ch_id, resolve_error)
+            self._enqueue_serverlog_outbox(guild, embed, resolve_error or "channel_unavailable", resolved_ch_id or ch_id)
             return
 
         try:
-            await channel.send(embed=embed)
+            await send(embed=embed)
         except discord.Forbidden:
             logger.warning("Sin permisos para enviar serverlogs en %s", guild.name)
+            self._enqueue_serverlog_outbox(guild, embed, "missing_send_messages", resolved_ch_id)
         except discord.HTTPException as exc:
             logger.warning("No se pudo enviar serverlog en %s: %s", guild.name, exc)
+            self._enqueue_serverlog_outbox(guild, embed, str(exc), resolved_ch_id)
+
+    def _enqueue_serverlog_outbox(self, guild: discord.Guild, embed: discord.Embed, error: str, channel_id=None) -> None:
+        try:
+            ch_id = channel_id
+            if ch_id is None:
+                cfg = self.db.get_server_config(guild.id)
+                ch_id = cfg.get("serverlog_channel")
+            if not ch_id or not hasattr(self.db, "enqueue_log_outbox"):
+                return
+            self.db.enqueue_log_outbox(
+                guild.id,
+                "serverlog",
+                {
+                    "embed": embed.to_dict(),
+                    "source": "serverutils_cog",
+                    "last_error": (error or "")[:500],
+                },
+                channel_id=int(ch_id),
+            )
+        except Exception as exc:
+            logger.warning("No se pudo encolar serverlog fallido en %s: %s", guild.name, exc)
 
     # ─────────────────────────────────────────────────────────────────────
     # /ping, /botinfo, /avatar, /servericon
@@ -242,75 +340,15 @@ class ServerUtils(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message_delete(self, message: discord.Message):
-        if not message.guild or message.author.bot:
-            return
-        events = self._get_log_events(message.guild.id)
-        if not events.get("message_delete"):
-            return
-        embed = discord.Embed(
-            title="🗑️ Mensaje eliminado",
-            description=(
-                f"**Canal:** {message.channel.mention} (`{message.channel.id}`)\n"
-                f"**Autor:** {message.author.mention} (`{message.author.id}`)"
-            ),
-            color=discord.Color.red(),
-            timestamp=datetime.now(timezone.utc),
-        )
-        content = message.content or "[Sin contenido de texto]"
-        if len(content) > 1024:
-            content = content[:1021] + "..."
-        embed.add_field(name="📝 Contenido", value=content, inline=False)
-
-        # ── Multimedia / Archivos adjuntos ────────────────────────────
-        if message.attachments:
-            att_lines = []
-            image_set = False
-            for att in message.attachments:
-                att_lines.append(f"[{att.filename}]({att.url}) ({att.content_type or 'desconocido'})")
-                # Mostrar la primera imagen como imagen del embed
-                if not image_set and att.content_type and att.content_type.startswith("image"):
-                    embed.set_image(url=att.url)
-                    image_set = True
-            attachments_text = "\n".join(att_lines[:5])
-            if len(attachments_text) > 1024:
-                attachments_text = attachments_text[:1021] + "..."
-            embed.add_field(
-                name=f"📎 Archivos adjuntos ({len(message.attachments)})",
-                value=attachments_text,
-                inline=False,
-            )
-
-        # ── Embeds del mensaje ────────────────────────────────────────
-        if message.embeds:
-            embed.add_field(
-                name="📋 Embeds",
-                value=f"`{len(message.embeds)}` embed(s) incluido(s)",
-                inline=True,
-            )
-
-        embed.set_footer(text=f"ID Mensaje: {message.id}")
-        embed.set_thumbnail(url=message.author.display_avatar.url)
-        await self._send_server_log(message.guild, embed)
+        # `cogs.logging` es el dueño único de logs de mensajes. Mantener este
+        # listener como no-op evita duplicados con distinto formato.
+        return
 
     @commands.Cog.listener()
     async def on_message_edit(self, before: discord.Message, after: discord.Message):
-        if not before.guild or before.author.bot or before.content == after.content:
-            return
-        events = self._get_log_events(before.guild.id)
-        if not events.get("message_edit"):
-            return
-        embed = discord.Embed(
-            title="✏️ Mensaje editado",
-            description=f"**Canal:** {before.channel.mention}\n**Autor:** {before.author.mention}\n[Ir al mensaje]({after.jump_url})",
-            color=discord.Color.yellow(),
-            timestamp=datetime.now(timezone.utc),
-        )
-        old = (before.content or "—")[:500]
-        new = (after.content or "—")[:500]
-        embed.add_field(name="Antes", value=old, inline=False)
-        embed.add_field(name="Después", value=new, inline=False)
-        embed.set_footer(text=f"ID: {before.id}")
-        await self._send_server_log(before.guild, embed)
+        # `cogs.logging` es el dueño único de logs de mensajes. Mantener este
+        # listener como no-op evita duplicados con distinto formato.
+        return
 
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):

@@ -10,6 +10,9 @@ export default function AuthCallback() {
     const token = params.get('token');
     if (token) {
       localStorage.setItem('botES_token', token);
+      localStorage.removeItem('botES_guild_id');
+      sessionStorage.removeItem('botES_guilds_cache');
+      sessionStorage.removeItem('botES_user_cache');
       navigate('/panel/dashboard', { replace: true });
     } else {
       navigate(

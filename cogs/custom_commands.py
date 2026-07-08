@@ -63,10 +63,10 @@ def _user_can_use(member: discord.Member, permission_data: Optional[str]) -> boo
         return True
     if data.get("everyone", True):
         return True
-    allowed = set(data.get("role_ids") or [])
+    allowed = {str(rid) for rid in (data.get("role_ids") or [])}
     if not allowed:
         return True
-    return any(r.id in allowed for r in member.roles)
+    return any(str(r.id) in allowed for r in member.roles)
 
 
 async def _cc_autocomplete(interaction: discord.Interaction, current: str):

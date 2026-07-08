@@ -93,12 +93,12 @@ export default function Giveaways({ selectedGuild, onToast }) {
     setCreating(true);
     try {
       await apiPost(`/api/guilds/${guildId}/giveaways`, {
-        channel_id: Number(form.channel_id),
+        channel_id: String(form.channel_id),
         prize: form.prize.trim(),
         duration_hours: Number(form.duration_hours),
         winners_count: Math.max(1, parseInt(form.winners_count, 10) || 1),
-        req_roles: form.req_roles.map(Number),
-        deny_roles: form.deny_roles.map(Number)});
+        req_roles: form.req_roles.map(String),
+        deny_roles: form.deny_roles.map(String)});
       toast("success", "Sorteo creado");
       setForm(EMPTY_FORM);
       setShowCreate(false);

@@ -9,6 +9,7 @@ export default function Moderation({ selectedGuild: guildId }) {
   const [tab, setTab] = useState("config");
   const [cfg, setCfg] = useState(null);
   const [cases, setCases] = useState([]);
+  const [activeModerations, setActiveModerations] = useState({ cases: [], pending: [] });
   const [appeals, setAppeals] = useState([]);
   const [appealFilter, setAppealFilter] = useState("PENDING");
   const [dirty, setDirty] = useState(false);
@@ -28,8 +29,8 @@ export default function Moderation({ selectedGuild: guildId }) {
     try {
       const modCfg = await apiGet(`/api/guilds/${guildId}/moderation`);
       setCfg(modCfg || {});
-    } catch {
-      showToast("Error cargando configuración", "error");
+    } catch (e) {
+      showToast(e?.message || "Error cargando configuración", "error");
     } finally {
       setLoading(false);
     }
@@ -59,6 +60,19 @@ export default function Moderation({ selectedGuild: guildId }) {
       setAppeals([]);
     }
   }, [guildId, appealFilter]);
+
+  const loadModerations = useCallback(async () => {
+    if (!guildId) return;
+    try {
+      const data = await apiGet(`/api/moderation/${guildId}/moderations`, {
+        cache: false});
+      setActiveModerations({
+        cases: Array.isArray(data?.cases) ? data.cases : [],
+        pending: Array.isArray(data?.pending) ? data.pending : []});
+    } catch {
+      setActiveModerations({ cases: [], pending: [] });
+    }
+  }, [guildId]);
 
   const createMuteRole = async () => {
     if (!guildId || creatingMuteRole) return;
@@ -90,27 +104,45 @@ export default function Moderation({ selectedGuild: guildId }) {
     }
   };
 
+  const updateCase = async (c, patch) => {
+    const ref = c.case_number || c.id;
+    try {
+      await apiPatch(`/api/moderation/${guildId}/cases/${ref}`, patch);
+      showToast("Caso actualizado");
+      loadCases();
+    } catch (e) {
+      showToast(e.message || "No se pudo actualizar el caso", "error");
+    }
+  };
+
+  const editCaseReason = async (c) => {
+    const value = window.prompt("Nueva razón del caso", c.reason || "");
+    if (value === null) return;
+    await updateCase(c, { reason: value });
+  };
+
   useEffect(() => {
     load();
   }, [load]);
   useEffect(() => {
     if (tab === "cases") loadCases();
+    if (tab === "active") loadModerations();
     if (tab === "appeals") loadAppeals();
-  }, [tab, loadCases, loadAppeals]);
+  }, [tab, loadCases, loadModerations, loadAppeals]);
 
   const set = (k, v) => {
     setCfg((p) => ({ ...p, [k]: v }));
     setDirty(true);
   };
 
-  // Wrapper para que SearchableSelect (que devuelve string) entregue al estado
-  // un int o null, manteniendo compatibilidad con el resto de la página.
-  const setId = (k) => (v) => set(k, v ? parseInt(v, 10) : null);
+  // Los snowflakes de Discord exceden Number.MAX_SAFE_INTEGER; mantenerlos como string.
+  const setId = (k) => (v) => set(k, v ? String(v) : null);
 
   const save = async () => {
     setSaving(true);
     try {
-      await apiPatch(`/api/guilds/${guildId}/moderation`, cfg);
+      const res = await apiPatch(`/api/guilds/${guildId}/moderation`, cfg);
+      if (res?.config) setCfg(res.config);
       setDirty(false);
       showToast("Configuración guardada");
     } catch (e) {
@@ -133,8 +165,16 @@ export default function Moderation({ selectedGuild: guildId }) {
   const COLORS = {
     WARN: "#f59e0b",
     MUTE: "#8b5cf6",
+    AUTO_MUTE: "#8b5cf6",
+    HARDMUTE: "#8b5cf6",
+    TIMEOUT: "#f97316",
+    TEMPBAN: "#ef4444",
+    FORCEBAN: "#ef4444",
+    SOFTBAN: "#f97316",
     KICK: "#f97316",
     BAN: "#ef4444",
+    AUTO_BAN: "#ef4444",
+    AUTO_KICK: "#f97316",
     UNMUTE: "#10b981",
     UNBAN: "#10b981"};
 
@@ -209,6 +249,7 @@ export default function Moderation({ selectedGuild: guildId }) {
         {[
           ["config", "Configuración"],
           ["cases", "Casos"],
+          ["active", "Activas"],
           ["appeals", "Apelaciones"],
         ].map(([id, label]) => (
           <button
@@ -419,7 +460,7 @@ export default function Moderation({ selectedGuild: guildId }) {
               />
             </div>
             <div className="tabs-container">
-              {["all", "WARN", "MUTE", "KICK", "BAN"].map((f) => (
+              {["all", "WARN", "MUTE", "TIMEOUT", "TEMPBAN", "KICK", "BAN", "PURGE"].map((f) => (
                 <button
                   key={f}
                   className={`tab-btn ${filter === f ? "active" : ""}`}
@@ -461,15 +502,115 @@ export default function Moderation({ selectedGuild: guildId }) {
                   {c.action_type}
                 </span>
                 <div style={{ flex: 1, minWidth: 140 }}>
-                  <div style={{ fontWeight: 700 }}>Usuario: {c.user_id}</div>
+                  <div style={{ fontWeight: 700 }}>
+                    #{c.case_number || c.id} · Usuario: {c.user_id || c.target_id}
+                  </div>
                   <div style={{ fontSize: "0.8rem", color: "var(--muted)" }}>
                     {c.reason || "Sin razón"}
                   </div>
+                  {c.evidence_url && (
+                    <a href={c.evidence_url} target="_blank" rel="noreferrer" style={{ fontSize: "0.78rem" }}>
+                      Evidencia
+                    </a>
+                  )}
                 </div>
+                <select
+                  value={c.status || "active"}
+                  onChange={(e) => updateCase(c, { status: e.target.value })}
+                  style={{
+                    background: "rgba(0,0,0,0.2)",
+                    color: "var(--text)",
+                    border: "1px solid rgba(255,255,255,0.12)",
+                    borderRadius: 10,
+                    padding: "7px 10px"}}
+                >
+                  <option value="active">active</option>
+                  <option value="expired">expired</option>
+                  <option value="revoked">revoked</option>
+                  <option value="failed">failed</option>
+                </select>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => editCaseReason(c)}
+                  style={{ fontSize: "0.78rem", padding: "7px 10px" }}
+                >
+                  Editar razón
+                </button>
                 <div style={{ fontSize: "0.78rem", color: "var(--muted)" }}>
                   {c.created_at
                     ? new Date(c.created_at).toLocaleDateString()
                     : "—"}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {tab === "active" && (
+        <div className="moderation-container">
+          <div className="cases-list">
+            {activeModerations.cases.length === 0 && activeModerations.pending.length === 0 && (
+              <div className="no-results">
+                <p>No hay sanciones activas registradas.</p>
+              </div>
+            )}
+            {activeModerations.cases.map((c, i) => {
+              const color = COLORS[c.action_type] || "#6366f1";
+              return (
+                <div
+                  key={`case-${c.id || i}`}
+                  className="case-row"
+                  style={{ padding: 16, borderRadius: 14, border: `1px solid ${color}33` }}
+                >
+                  <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+                    <span
+                      style={{
+                        padding: "4px 10px",
+                        borderRadius: 999,
+                        fontSize: "0.72rem",
+                        fontWeight: 900,
+                        background: `${color}22`,
+                        color}}
+                    >
+                      {c.action_type}
+                    </span>
+                    <strong>#{c.case_number || c.id}</strong>
+                    <span>Usuario: {c.user_id || c.target_id}</span>
+                    <span style={{ color: "var(--muted)" }}>
+                      Expira: {c.expires_at ? new Date(c.expires_at).toLocaleString() : "permanente"}
+                    </span>
+                  </div>
+                  <div style={{ marginTop: 8, color: "var(--muted)", fontSize: "0.86rem" }}>
+                    {c.reason || "Sin razón"}
+                  </div>
+                </div>
+              );
+            })}
+            {activeModerations.pending.map((p, i) => (
+              <div
+                key={`pending-${p.id || i}`}
+                className="case-row"
+                style={{ padding: 16, borderRadius: 14, border: "1px solid rgba(245,158,11,0.25)" }}
+              >
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+                  <span
+                    style={{
+                      padding: "4px 10px",
+                      borderRadius: 999,
+                      fontSize: "0.72rem",
+                      fontWeight: 900,
+                      background: "rgba(245,158,11,0.14)",
+                      color: "#f59e0b"}}
+                  >
+                    JOB
+                  </span>
+                  <strong>{p.action_type}</strong>
+                  <span>Usuario: {p.user_id}</span>
+                  <span style={{ color: "var(--muted)" }}>
+                    Ejecuta: {p.execute_at ? new Date(p.execute_at).toLocaleString() : "—"}
+                  </span>
                 </div>
               </div>
             ))}
@@ -483,7 +624,7 @@ export default function Moderation({ selectedGuild: guildId }) {
             {[
               ["PENDING", "Pendientes"],
               ["ACCEPTED", "Aceptadas"],
-              ["REJECTED", "Rechazadas"],
+              ["DENIED", "Rechazadas"],
               ["ALL", "Todas"],
             ].map(([id, label]) => (
               <button
@@ -508,7 +649,7 @@ export default function Moderation({ selectedGuild: guildId }) {
               const statusColor = {
                 PENDING: "#f59e0b",
                 ACCEPTED: "#10b981",
-                REJECTED: "#ef4444",
+                DENIED: "#ef4444",
               }[status] || "#6366f1";
               return (
                 <div
@@ -583,7 +724,7 @@ export default function Moderation({ selectedGuild: guildId }) {
                       <button
                         className="btn btn-danger"
                         style={{ fontSize: "0.78rem", padding: "6px 12px" }}
-                        onClick={() => resolveAppeal(a.id, "REJECTED", false)}
+                        onClick={() => resolveAppeal(a.id, "DENIED", false)}
                       >
                         ❌ Rechazar
                       </button>

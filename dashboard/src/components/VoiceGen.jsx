@@ -4,7 +4,7 @@ import { Icon } from "../lib/icons";
 import { SearchableSelect } from "./ui";
 import Toast from "./Toast";
 import { useSaveBar } from "../lib/SaveBarContext";
-import MessageEditor, { normalizeMessage, EMPTY_MESSAGE } from "./MessageEditor";
+import MessageEditor, { normalizeMessage } from "./MessageEditor";
 
 export default function VoiceGen({ selectedGuild: guildId }) {
   const [cfg, setCfg] = useState(null);
@@ -29,8 +29,8 @@ export default function VoiceGen({ selectedGuild: guildId }) {
       ]);
       setCfg(cfgData.config || {});
       setActiveVCs(vcData.active_channels || []);
-    } catch {
-      showToast("Error cargando configuración", "error");
+    } catch (e) {
+      showToast(e?.message || "Error cargando configuración", "error");
     } finally {
       setLoading(false);
     }
@@ -44,7 +44,7 @@ export default function VoiceGen({ selectedGuild: guildId }) {
     setCfg((p) => ({ ...p, [k]: v }));
     setDirty(true);
   };
-  const setId = (k) => (v) => set(k, v ? parseInt(v, 10) : null);
+  const setId = (k) => (v) => set(k, v ? String(v) : null);
 
   const save = async () => {
     setSaving(true);

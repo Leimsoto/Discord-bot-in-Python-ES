@@ -49,8 +49,8 @@ export default function Welcome({ selectedGuild: guildId, onToast }) {
       // Leaderboard sólo cuando se mire la pestaña, pero pre-cargamos en background
       const iData = await apiGet(`/api/guilds/${guildId}/invites`, { cache: false }).catch(() => ({ leaderboard: [] }));
       setLeaderboard(iData?.leaderboard || []);
-    } catch {
-      toast("error", "Error cargando configuración");
+    } catch (e) {
+      toast("error", e?.message || "Error cargando configuración");
     } finally {
       setLoading(false);
     }
@@ -161,7 +161,7 @@ export default function Welcome({ selectedGuild: guildId, onToast }) {
             <label>Canal de bienvenidas</label>
             <SearchableSelect
               value={data.welcome.channel_id || null}
-              onChange={(v) => setW("channel_id", v ? Number(v) : null)}
+              onChange={(v) => setW("channel_id", v ? String(v) : null)}
               endpoint={`/api/guilds/${guildId}/channels?type=text`}
               itemsKey="channels"
               placeholder="Seleccionar canal…"
@@ -206,7 +206,7 @@ export default function Welcome({ selectedGuild: guildId, onToast }) {
             <label>Canal de boosters</label>
             <SearchableSelect
               value={data.boost.channel_id || null}
-              onChange={(v) => setB("channel_id", v ? Number(v) : null)}
+              onChange={(v) => setB("channel_id", v ? String(v) : null)}
               endpoint={`/api/guilds/${guildId}/channels?type=text`}
               itemsKey="channels"
               placeholder="Seleccionar canal…"
@@ -262,7 +262,7 @@ export default function Welcome({ selectedGuild: guildId, onToast }) {
               <label>Canal de log</label>
               <SearchableSelect
                 value={data.invites.channel_id || null}
-                onChange={(v) => setI("channel_id", v ? Number(v) : null)}
+                onChange={(v) => setI("channel_id", v ? String(v) : null)}
                 endpoint={`/api/guilds/${guildId}/channels?type=text`}
                 itemsKey="channels"
                 placeholder="Seleccionar canal…"

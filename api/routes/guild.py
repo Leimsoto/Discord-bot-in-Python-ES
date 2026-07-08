@@ -38,8 +38,55 @@ import discord
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from api.deps import get_bot, get_current_user, get_db, require_guild_admin
+from api.snowflakes import coerce_snowflake, stringify_fields, stringify_rows
 
 logger = logging.getLogger("API.guild")
+
+
+def _serialize_snowflake(value):
+    if value in (None, ""):
+        return None
+    return str(value)
+
+
+def _coerce_optional_snowflake(value, field_name: str) -> int | None:
+    if value in (None, "", 0, "0"):
+        return None
+    try:
+        return int(str(value))
+    except (TypeError, ValueError):
+        raise HTTPException(400, f"{field_name} inválido")
+
+
+def _is_messageable_log_channel(channel) -> bool:
+    return channel is not None and callable(getattr(channel, "send", None))
+
+
+def _repair_rounded_log_channel_id(bot, guild_id: int, channel_id: int | None) -> int | None:
+    """Repara IDs de canal redondeados por JS si hay un único canal cercano."""
+    if bot is None or not hasattr(bot, "get_guild") or channel_id is None:
+        return channel_id
+    guild = bot.get_guild(guild_id)
+    if guild is None:
+        return channel_id
+    if _is_messageable_log_channel(guild.get_channel(channel_id)):
+        return channel_id
+
+    candidates = [
+        ch.id
+        for ch in getattr(guild, "channels", [])
+        if _is_messageable_log_channel(ch) and abs(int(ch.id) - int(channel_id)) <= 4096
+    ]
+    if len(candidates) == 1:
+        fixed = int(candidates[0])
+        logger.warning(
+            "serverlog_channel redondeado reparado para guild %s: %s -> %s",
+            guild_id,
+            channel_id,
+            fixed,
+        )
+        return fixed
+    return channel_id
 
 # ── Router legacy (prefijo singular) ──────────────────────────────────────────
 router_legacy = APIRouter(prefix="/api/guild/{guild_id}", tags=["guild"])
@@ -470,7 +517,7 @@ async def patch_guild_config(
 async def get_ia_config(
     guild_id: int, db=Depends(get_db), _user=Depends(require_guild_admin)
 ):
-    return db.get_ai_config(guild_id) or {}
+    return stringify_fields(db.get_ai_config(guild_id) or {}, ("guild_id", "ai_channel_id", "ai_role_id"))
 
 
 @router.patch("/{guild_id}/ia")
@@ -480,8 +527,12 @@ async def patch_ia_config(
     db=Depends(get_db),
     _user=Depends(require_guild_admin),
 ):
-    db.set_ai_config(guild_id, **body)
-    return db.get_ai_config(guild_id) or body
+    payload = dict(body or {})
+    for field in ("ai_channel_id", "ai_role_id"):
+        if field in payload:
+            payload[field] = _coerce_optional_snowflake(payload[field], field)
+    db.set_ai_config(guild_id, **payload)
+    return stringify_fields(db.get_ai_config(guild_id) or payload, ("guild_id", "ai_channel_id", "ai_role_id"))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -496,21 +547,22 @@ async def get_moderation_config(
     """Devuelve la configuración completa de moderación para el dashboard."""
     cfg = db.get_config(guild_id) or {}
     srv_cfg = db.get_server_config(guild_id) if hasattr(db, "get_server_config") else {}
-    merged = {**cfg, **srv_cfg}
+    # No usar un merge plano: server_config contiene staff_role_id por legado y
+    # su valor por defecto None puede pisar el staff_role_id real de guild_config.
     return {
-        "mute_role_id": merged.get("mute_role_id"),
-        "mod_role_id": merged.get("mod_role_id"),
-        "staff_role_id": merged.get("staff_role_id"),
-        "modlog_channel": merged.get("modlog_channel"),
-        "modlog_enabled": merged.get("modlog_enabled", 1),
-        "warn_ban_threshold": merged.get("warn_ban_threshold", 7),
-        "warn_kick_threshold": merged.get("warn_kick_threshold", 5),
-        "warn_mute_threshold": merged.get("warn_mute_threshold", 3),
-        "warn_ban_enabled": merged.get("warn_ban_enabled", 0),
-        "warn_kick_enabled": merged.get("warn_kick_enabled", 0),
-        "warn_mute_enabled": merged.get("warn_mute_enabled", 1),
-        "warn_mute_duration": merged.get("warn_mute_duration", 600),
-        "warn_embed_config": merged.get("warn_embed_config"),
+        "mute_role_id": _serialize_snowflake(cfg.get("mute_role_id")),
+        "mod_role_id": _serialize_snowflake(srv_cfg.get("mod_role_id")),
+        "staff_role_id": _serialize_snowflake(srv_cfg.get("staff_role_id") or cfg.get("staff_role_id")),
+        "modlog_channel": _serialize_snowflake(srv_cfg.get("modlog_channel")),
+        "modlog_enabled": srv_cfg.get("modlog_enabled", 1),
+        "warn_ban_threshold": cfg.get("warn_ban_threshold", 7),
+        "warn_kick_threshold": cfg.get("warn_kick_threshold", 5),
+        "warn_mute_threshold": cfg.get("warn_mute_threshold", 3),
+        "warn_ban_enabled": cfg.get("warn_ban_enabled", 0),
+        "warn_kick_enabled": cfg.get("warn_kick_enabled", 0),
+        "warn_mute_enabled": cfg.get("warn_mute_enabled", 1),
+        "warn_mute_duration": cfg.get("warn_mute_duration", 600),
+        "warn_embed_config": cfg.get("warn_embed_config"),
     }
 
 
@@ -550,16 +602,62 @@ async def patch_moderation_config(
         "modlog_enabled",
     }
 
-    config_payload = {k: v for k, v in body.items() if k in config_keys}
-    server_payload = {k: v for k, v in body.items() if k in server_keys}
+    id_keys = {"mute_role_id", "staff_role_id", "mod_role_id", "modlog_channel"}
+
+    def normalize_value(key, value):
+        if key in id_keys:
+            if value in (None, "", 0, "0"):
+                return None
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                raise HTTPException(400, f"{key} debe ser un ID numérico")
+        return value
+
+    config_payload = {
+        k: normalize_value(k, v)
+        for k, v in body.items()
+        if k in config_keys
+    }
+    server_payload = {
+        k: normalize_value(k, v)
+        for k, v in body.items()
+        if k in server_keys
+    }
+
+    # staff_role_id existía en ambas tablas; los cogs lo leen desde
+    # server_config, así que lo persistimos también ahí para que el dashboard
+    # se aplique inmediatamente al bot.
+    if "staff_role_id" in config_payload:
+        server_payload["staff_role_id"] = config_payload["staff_role_id"]
 
     if config_payload:
         db.set_config(guild_id, **config_payload)
     if server_payload and hasattr(db, "set_server_config"):
         db.set_server_config(guild_id, **server_payload)
 
-    updated = list(config_payload.keys()) + list(server_payload.keys())
-    return {"status": "ok", "updated_keys": updated}
+    updated = sorted(set(config_payload.keys()) | set(server_payload.keys()))
+    cfg = db.get_config(guild_id) or {}
+    srv_cfg = db.get_server_config(guild_id) if hasattr(db, "get_server_config") else {}
+    return {
+        "status": "ok",
+        "updated_keys": updated,
+        "config": {
+            "mute_role_id": _serialize_snowflake(cfg.get("mute_role_id")),
+            "mod_role_id": _serialize_snowflake(srv_cfg.get("mod_role_id")),
+            "staff_role_id": _serialize_snowflake(srv_cfg.get("staff_role_id") or cfg.get("staff_role_id")),
+            "modlog_channel": _serialize_snowflake(srv_cfg.get("modlog_channel")),
+            "modlog_enabled": srv_cfg.get("modlog_enabled", 1),
+            "warn_ban_threshold": cfg.get("warn_ban_threshold", 7),
+            "warn_kick_threshold": cfg.get("warn_kick_threshold", 5),
+            "warn_mute_threshold": cfg.get("warn_mute_threshold", 3),
+            "warn_ban_enabled": cfg.get("warn_ban_enabled", 0),
+            "warn_kick_enabled": cfg.get("warn_kick_enabled", 0),
+            "warn_mute_enabled": cfg.get("warn_mute_enabled", 1),
+            "warn_mute_duration": cfg.get("warn_mute_duration", 600),
+            "warn_embed_config": cfg.get("warn_embed_config"),
+        },
+    }
 
 
 @router.post("/{guild_id}/moderation/mute-role")
@@ -594,7 +692,7 @@ async def create_mute_role(
         )
 
     return {
-        "id": role.id,
+        "id": str(role.id),
         "name": role.name,
         "created": True,
     }
@@ -623,7 +721,7 @@ async def patch_automod_config(
     enabled = body.get("enabled")
     rules = body.get("rules")
     db.set_automod_config(guild_id, enabled=enabled, rules=rules)
-    return {"status": "ok"}
+    return {"status": "ok", "config": db.get_automod_config(guild_id)}
 
 
 @router.get("/{guild_id}/automod/log")
@@ -646,8 +744,9 @@ async def get_levels_config(
     guild_id: int, db=Depends(get_db), _user=Depends(require_guild_admin)
 ):
     cfg = db.get_xp_config(guild_id) or {}
+    cfg = stringify_fields(cfg, ("guild_id", "announcement_channel_id"))
     rewards = db.get_level_rewards(guild_id) or []
-    return {"config": cfg, "rewards": rewards}
+    return {"config": cfg, "rewards": stringify_rows(rewards, ("guild_id", "role_id"))}
 
 
 @router.patch("/{guild_id}/levels")
@@ -679,16 +778,24 @@ async def patch_levels_config(
         "announcement_mode",
     }
     filtered = {k: v for k, v in body.items() if k in allowed}
+    if "announcement_channel_id" in filtered:
+        filtered["announcement_channel_id"] = _coerce_optional_snowflake(
+            filtered["announcement_channel_id"], "announcement_channel_id"
+        )
     if filtered:
         db.set_xp_config(guild_id, **filtered)
-    return {"status": "ok", "updated": list(filtered.keys())}
+    return {
+        "status": "ok",
+        "updated": list(filtered.keys()),
+        "config": stringify_fields(db.get_xp_config(guild_id), ("guild_id", "announcement_channel_id")),
+    }
 
 
 @router.get("/{guild_id}/levels/rewards")
 async def get_level_rewards(
     guild_id: int, db=Depends(get_db), _user=Depends(require_guild_admin)
 ):
-    return {"rewards": db.get_level_rewards(guild_id) or []}
+    return {"rewards": stringify_rows(db.get_level_rewards(guild_id) or [], ("guild_id", "role_id"))}
 
 
 @router.post("/{guild_id}/levels/rewards")
@@ -699,11 +806,11 @@ async def add_level_reward(
     _user=Depends(require_guild_admin),
 ):
     nivel = int(body.get("level", 0))
-    role_id = int(body.get("role_id", 0))
+    role_id = coerce_snowflake(body.get("role_id"), "role_id")
     if nivel < 1 or role_id < 1:
         raise HTTPException(400, "nivel y role_id son requeridos y deben ser > 0")
     db.set_level_reward(guild_id, nivel, role_id)
-    return {"status": "ok", "level": nivel, "role_id": role_id}
+    return {"status": "ok", "level": nivel, "role_id": str(role_id)}
 
 
 @router.delete("/{guild_id}/levels/rewards/{level}")
@@ -728,7 +835,10 @@ async def get_tickets_config(
 ):
     cfg = db.get_ticket_config(guild_id) or {}
     categories = db.get_ticket_categories(guild_id) or []
-    return {"config": cfg, "categories": categories}
+    return {
+        "config": stringify_fields(cfg, ("guild_id", "panel_channel_id", "category_id", "log_channel_id")),
+        "categories": stringify_rows(categories, ("guild_id", "staff_role_id")),
+    }
 
 
 @router.patch("/{guild_id}/tickets")
@@ -762,9 +872,16 @@ async def patch_tickets_config(
         "msg_close_template",
     }
     filtered = {k: v for k, v in body.items() if k in allowed}
+    for field in ("panel_channel_id", "category_id", "log_channel_id"):
+        if field in filtered:
+            filtered[field] = _coerce_optional_snowflake(filtered[field], field)
     if filtered:
         db.set_ticket_config(guild_id, **filtered)
-    return {"status": "ok", "updated": list(filtered.keys())}
+    return {
+        "status": "ok",
+        "updated": list(filtered.keys()),
+        "config": stringify_fields(db.get_ticket_config(guild_id), ("guild_id", "panel_channel_id", "category_id", "log_channel_id")),
+    }
 
 
 @router.post("/{guild_id}/tickets/send-panel")
@@ -778,7 +895,7 @@ async def send_ticket_panel(
     """Envía el panel de tickets a un canal usando el bot."""
     if bot is None:
         raise HTTPException(503, "Bot no disponible")
-    channel_id = int(body.get("channel_id", 0))
+    channel_id = coerce_snowflake(body.get("channel_id"), "channel_id")
     if not channel_id:
         raise HTTPException(400, "channel_id requerido")
     guild = bot.get_guild(guild_id)
@@ -823,7 +940,7 @@ async def add_ticket_category(
         welcome_data,
         description=body.get("description"),
         welcome_embed_template_key=body.get("welcome_embed_template_key"),
-        staff_role_id=body.get("staff_role_id"),
+        staff_role_id=_coerce_optional_snowflake(body.get("staff_role_id"), "staff_role_id"),
     )
     return {"status": "ok"}
 
@@ -854,7 +971,7 @@ async def get_radio_config(
     guild_id: int, db=Depends(get_db), _user=Depends(require_guild_admin)
 ):
     cfg = db.get_radio_config(guild_id) if hasattr(db, "get_radio_config") else {}
-    return cfg or {}
+    return stringify_fields(cfg or {}, ("guild_id", "channel_id"))
 
 
 @router.patch("/{guild_id}/radio")
@@ -865,8 +982,11 @@ async def patch_radio_config(
     _user=Depends(require_guild_admin),
 ):
     if hasattr(db, "set_radio_config"):
+        if "channel_id" in body:
+            body = {**body, "channel_id": _coerce_optional_snowflake(body.get("channel_id"), "channel_id")}
         db.set_radio_config(guild_id, **body)
-    return {"status": "ok"}
+    cfg = db.get_radio_config(guild_id) if hasattr(db, "get_radio_config") else {}
+    return {"status": "ok", "config": stringify_fields(cfg or {}, ("guild_id", "channel_id"))}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -984,7 +1104,7 @@ async def get_schedules(
     guild_id: int, db=Depends(get_db), _user=Depends(require_guild_admin)
 ):
     schedules = db.get_schedules(guild_id) if hasattr(db, "get_schedules") else []
-    return {"schedules": schedules}
+    return {"schedules": stringify_rows(schedules, ("guild_id", "channel_id", "creator_id"))}
 
 
 @router.post("/{guild_id}/schedules")
@@ -995,7 +1115,7 @@ async def create_schedule(
     user=Depends(require_guild_admin),
 ):
     name = body.get("name", "").strip()
-    channel = int(body.get("channel_id", 0))
+    channel = coerce_snowflake(body.get("channel_id"), "channel_id")
     content = body.get("content", "").strip()
     interval = int(body.get("interval_seconds", 3600))
     creator = int(user.get("user_id", 0))
@@ -1038,9 +1158,11 @@ async def update_schedule(
         raise HTTPException(404, "Horario no encontrado")
     allowed = {"enabled", "channel_id", "content", "interval_seconds"}
     filtered = {k: v for k, v in body.items() if k in allowed}
+    if "channel_id" in filtered:
+        filtered["channel_id"] = coerce_snowflake(filtered["channel_id"], "channel_id")
     if filtered:
         db.update_schedule(sched["id"], **filtered)
-    return {"status": "ok"}
+    return {"status": "ok", "updated": [*filtered.keys()]}
 
 
 @router.delete("/{guild_id}/schedules/{name}")
@@ -1065,7 +1187,7 @@ async def get_logging_config(
     """Configuración de server event logging."""
     cfg = db.get_server_config(guild_id)
     return {
-        "serverlog_channel": cfg.get("serverlog_channel"),
+        "serverlog_channel": _serialize_snowflake(cfg.get("serverlog_channel")),
         "serverlog_enabled": cfg.get("serverlog_enabled", 1),
         "log_events": cfg.get("log_events"),
     }
@@ -1076,6 +1198,7 @@ async def patch_logging_config(
     guild_id: int,
     request: Request,
     db=Depends(get_db),
+    bot=Depends(get_bot),
     _user=Depends(require_guild_admin),
 ):
     """Actualizar configuración de server event logging."""
@@ -1084,8 +1207,20 @@ async def patch_logging_config(
     filtered = {k: v for k, v in body.items() if k in allowed}
     if not filtered:
         return {"status": "noop", "detail": "Sin campos válidos"}
+    if "serverlog_channel" in filtered:
+        channel_id = _coerce_optional_snowflake(filtered.get("serverlog_channel"), "serverlog_channel")
+        filtered["serverlog_channel"] = _repair_rounded_log_channel_id(bot, guild_id, channel_id)
     db.set_server_config(guild_id, **filtered)
-    return {"status": "ok", "updated": list(filtered.keys())}
+    saved = db.get_server_config(guild_id)
+    return {
+        "status": "ok",
+        "updated": list(filtered.keys()),
+        "config": {
+            "serverlog_channel": _serialize_snowflake(saved.get("serverlog_channel")),
+            "serverlog_enabled": saved.get("serverlog_enabled", 1),
+            "log_events": saved.get("log_events"),
+        },
+    }
 
 
 # ── Utilities (anti-raid, anti-alt, starboard) ────────────────────────────────
@@ -1105,8 +1240,8 @@ async def get_utilities_config(
         "anti_raid_lockdown_duration": cfg.get("anti_raid_lockdown_duration", 300),
         "anti_alt_min_age": cfg.get("anti_alt_min_age", 7),
         "anti_alt_action": cfg.get("anti_alt_action", "log"),
-        "anti_alt_role_id": cfg.get("anti_alt_role_id"),
-        "starboard_channel_id": cfg.get("starboard_channel_id"),
+        "anti_alt_role_id": _serialize_snowflake(cfg.get("anti_alt_role_id")),
+        "starboard_channel_id": _serialize_snowflake(cfg.get("starboard_channel_id")),
         "starboard_threshold": cfg.get("starboard_threshold", 3),
     }
 
@@ -1126,8 +1261,19 @@ async def patch_utilities_config(
         "anti_alt_role_id", "starboard_channel_id", "starboard_threshold",
     }
     filtered = {k: v for k, v in body.items() if k in allowed}
+    for field in ("anti_alt_role_id", "starboard_channel_id"):
+        if field in filtered:
+            filtered[field] = _coerce_optional_snowflake(filtered[field], field)
     if not filtered:
         return {"status": "noop", "detail": "Sin campos válidos"}
     db.set_server_config(guild_id, **filtered)
-    return {"status": "ok", "updated": list(filtered.keys())}
+    saved = db.get_server_config(guild_id)
+    return {
+        "status": "ok",
+        "updated": list(filtered.keys()),
+        "config": {
+            "anti_alt_role_id": _serialize_snowflake(saved.get("anti_alt_role_id")),
+            "starboard_channel_id": _serialize_snowflake(saved.get("starboard_channel_id")),
+        },
+    }
 

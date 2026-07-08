@@ -9,6 +9,7 @@ PUT /api/guild/{guild_id}/channels/{channel_id} → Actualizar la config de un c
 
 from fastapi import APIRouter, Depends
 from api.deps import get_db, require_guild_admin
+from api.snowflakes import coerce_snowflake, stringify_rows
 from pydantic import BaseModel
 from typing import Optional
 
@@ -32,14 +33,14 @@ async def get_all_channel_configs(
     """Obtiene una lista de todos los canales que tienen configuración especial guardada."""
     channels = db.get_all_channel_configs(guild_id)
     return {
-        "guild_id": guild_id,
-        "channels": channels
+        "guild_id": str(guild_id),
+        "channels": stringify_rows(channels, ("guild_id", "channel_id"))
     }
 
 @router.put("/{channel_id}")
 async def update_channel_config(
     guild_id: int,
-    channel_id: int,
+    channel_id: str,
     body: ChannelConfigUpdate,
     db=Depends(get_db),
     _user=Depends(require_guild_admin),
@@ -48,6 +49,6 @@ async def update_channel_config(
     update_data = {k: v for k, v in body.model_dump().items() if v is not None}
     
     if update_data:
-        db.set_channel_config(channel_id, guild_id, **update_data)
+        db.set_channel_config(coerce_snowflake(channel_id, "channel_id"), guild_id, **update_data)
         
     return {"status": "ok", "message": "Configuración de canal actualizada."}

@@ -31,14 +31,28 @@ def _channel_owner(db, channel_id: int) -> int | None:
     return row["owner_id"] if row else None
 
 
+def _is_guild_admin(member: discord.abc.User | discord.Member, guild: discord.Guild | None) -> bool:
+    """True si el usuario puede administrar controles de VoiceGen.
+
+    Los canales JTC tienen dueño, pero los administradores/owner del servidor
+    deben poder intervenir cualquier canal generado para desbloquear, moderar o
+    corregir configuración sin depender de la propiedad interna del canal.
+    """
+    if guild is None:
+        return False
+    if member.id == guild.owner_id:
+        return True
+    perms = getattr(member, "guild_permissions", None)
+    return bool(perms and perms.administrator)
+
+
 async def _assert_owner(interaction: discord.Interaction, db) -> bool:
-    owner_id = _channel_owner(db, getattr(interaction.user.voice.channel, "id", 0) if interaction.user.voice else 0)
     if not interaction.user.voice or not interaction.user.voice.channel:
         await interaction.response.send_message("❌ Debes estar en tu canal de voz.", ephemeral=True)
         return False
     channel_id = interaction.user.voice.channel.id
     owner_id = _channel_owner(db, channel_id)
-    if owner_id != interaction.user.id:
+    if owner_id != interaction.user.id and not _is_guild_admin(interaction.user, interaction.guild):
         await interaction.response.send_message("❌ Solo el dueño del canal puede hacer esto.", ephemeral=True)
         return False
     return True
@@ -143,7 +157,7 @@ class VCControlView(discord.ui.View):
             return
         # Solo se puede reclamar si el dueño actual NO está en el canal
         current_owner_in_vc = any(m.id == row["owner_id"] for m in vc.members)
-        if current_owner_in_vc:
+        if current_owner_in_vc and not _is_guild_admin(interaction.user, interaction.guild):
             await interaction.response.send_message("❌ El dueño actual aún está en el canal.", ephemeral=True)
             return
         self.cog.db.update_voice_gen_channel_owner(vc.id, interaction.user.id)
@@ -550,7 +564,7 @@ class VoiceGen(commands.Cog):
         row = self.db.get_voice_gen_channel(vc.id)
         if not row:
             return await interaction.response.send_message("❌ Este no es un VC generado.", ephemeral=True)
-        if any(m.id == row["owner_id"] for m in vc.members):
+        if any(m.id == row["owner_id"] for m in vc.members) and not _is_guild_admin(interaction.user, interaction.guild):
             return await interaction.response.send_message("❌ El dueño actual aún está en el canal.", ephemeral=True)
         self.db.update_voice_gen_channel_owner(vc.id, interaction.user.id)
         await vc.edit(name=f"{interaction.user.display_name}'s VC")

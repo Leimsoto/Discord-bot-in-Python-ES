@@ -11,6 +11,7 @@ DELETE /api/guilds/{guild_id}/autoresponses/{ar_id}  → eliminar
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from api.deps import get_db, require_guild_admin
+from api.snowflakes import coerce_optional_snowflake, stringify_rows
 
 router = APIRouter(prefix="/api/guilds/{guild_id}/autoresponses", tags=["autoresponses"])
 
@@ -24,7 +25,12 @@ async def list_autoresponses(
     _user=Depends(require_guild_admin),
 ):
     """Lista todas las auto-respuestas del servidor."""
-    return {"autoresponses": db.get_autoresponses(guild_id)}
+    return {
+        "autoresponses": stringify_rows(
+            db.get_autoresponses(guild_id),
+            ("guild_id", "channel_id"),
+        )
+    }
 
 
 @router.post("")
@@ -49,7 +55,7 @@ async def create_autoresponse(
     trigger = (body.get("trigger") or "").strip()
     response = (body.get("response") or "").strip()
     response_data = body.get("response_data") or None
-    channel_id = body.get("channel_id")
+    channel_id = coerce_optional_snowflake(body.get("channel_id"), "channel_id")
     match_type = (body.get("match_type") or "contains").lower()
     if match_type not in MATCH_TYPES:
         raise HTTPException(400, f"match_type inválido. Valores: {sorted(MATCH_TYPES)}")
@@ -89,7 +95,7 @@ async def update_autoresponse(
     if "response_data" in body:
         payload["response_data"] = body["response_data"] or None
     if "channel_id" in body:
-        payload["channel_id"] = body["channel_id"]
+        payload["channel_id"] = coerce_optional_snowflake(body["channel_id"], "channel_id")
     if "match_type" in body:
         mt = (body["match_type"] or "contains").lower()
         if mt not in MATCH_TYPES:

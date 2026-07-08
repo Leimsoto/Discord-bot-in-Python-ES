@@ -35,8 +35,8 @@ export default function IAConfig({ selectedGuild: guildId }) {
       ]);
       setCfg(iaCfg || {});
       setKeyAssignment(keyData?.assigned || null);
-    } catch {
-      showToast("Error cargando configuración IA", "error");
+    } catch (e) {
+      showToast(e?.message || "Error cargando configuración IA", "error");
     } finally {
       setLoading(false);
     }
@@ -50,7 +50,7 @@ export default function IAConfig({ selectedGuild: guildId }) {
     setCfg((prev) => ({ ...prev, [key]: val }));
     setDirty(true);
   };
-  const setId = (key) => (v) => set(key, v ? parseInt(v, 10) : null);
+  const setId = (key) => (v) => set(key, v ? String(v) : null);
 
   const save = async () => {
     setSaving(true);

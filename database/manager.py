@@ -1449,6 +1449,7 @@ class DatabaseManager:
     DEFAULT_SERVER_CONFIG: Dict[str, Any] = {
         "guild_id": None,
         "staff_role_id": None,
+        "mod_role_id": None,
         "modlog_channel": None,
         "serverlog_channel": None,
         "log_events": None,
@@ -1660,6 +1661,7 @@ class DatabaseManager:
         self._migrate_ai_config()
         self._migrate_tickets()
         self._run_migrations()
+        self._ensure_moderation_mvp_tables()
 
     def _migrate_tickets(self) -> None:
         """
@@ -1970,6 +1972,189 @@ class DatabaseManager:
                         f"Error en migración v{version} ('{description}'): {exc}"
                     )
 
+    def _ensure_moderation_mvp_tables(self) -> None:
+        """Migraciones idempotentes para el MVP de moderación/Nekotina parity."""
+        text_type = "VARCHAR(50)" if self.db_type == "mariadb" else "TEXT"
+        mod_columns = [
+            ("case_number", "INTEGER"),
+            ("status", f"{text_type} DEFAULT 'active'"),
+            ("evidence_url", "TEXT"),
+            ("duration_seconds", "INTEGER"),
+            ("expires_at", text_type),
+            ("parent_case_id", "INTEGER"),
+            ("updated_at", text_type),
+        ]
+        for col, col_def in mod_columns:
+            self.ensure_column("mod_actions", col, col_def)
+        self.ensure_column("tempbans", "case_id", "INTEGER")
+
+        if self.db_type == "sqlite":
+            self._execute(
+                """
+                CREATE TABLE IF NOT EXISTS pending_moderation_actions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    guild_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    action_type TEXT NOT NULL,
+                    case_id INTEGER,
+                    execute_at TEXT NOT NULL,
+                    status TEXT DEFAULT 'pending',
+                    attempts INTEGER DEFAULT 0,
+                    last_error TEXT,
+                    extra_data TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT
+                )
+                """,
+                (),
+            )
+            self._execute(
+                """
+                CREATE TABLE IF NOT EXISTS log_outbox (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    guild_id INTEGER NOT NULL,
+                    log_type TEXT NOT NULL,
+                    channel_id INTEGER,
+                    payload TEXT NOT NULL,
+                    status TEXT DEFAULT 'pending',
+                    attempts INTEGER DEFAULT 0,
+                    last_error TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT,
+                    sent_at TEXT
+                )
+                """,
+                (),
+            )
+        elif self.db_type == "postgresql":
+            self._execute(
+                """
+                CREATE TABLE IF NOT EXISTS pending_moderation_actions (
+                    id BIGSERIAL PRIMARY KEY,
+                    guild_id BIGINT NOT NULL,
+                    user_id BIGINT NOT NULL,
+                    action_type TEXT NOT NULL,
+                    case_id BIGINT,
+                    execute_at TEXT NOT NULL,
+                    status TEXT DEFAULT 'pending',
+                    attempts INTEGER DEFAULT 0,
+                    last_error TEXT,
+                    extra_data TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT
+                )
+                """,
+                (),
+            )
+            self._execute(
+                """
+                CREATE TABLE IF NOT EXISTS log_outbox (
+                    id BIGSERIAL PRIMARY KEY,
+                    guild_id BIGINT NOT NULL,
+                    log_type TEXT NOT NULL,
+                    channel_id BIGINT,
+                    payload TEXT NOT NULL,
+                    status TEXT DEFAULT 'pending',
+                    attempts INTEGER DEFAULT 0,
+                    last_error TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT,
+                    sent_at TEXT
+                )
+                """,
+                (),
+            )
+        else:
+            self._execute(
+                """
+                CREATE TABLE IF NOT EXISTS pending_moderation_actions (
+                    id BIGINT NOT NULL AUTO_INCREMENT,
+                    guild_id BIGINT NOT NULL,
+                    user_id BIGINT NOT NULL,
+                    action_type VARCHAR(40) NOT NULL,
+                    case_id BIGINT,
+                    execute_at VARCHAR(50) NOT NULL,
+                    status VARCHAR(20) DEFAULT 'pending',
+                    attempts INT DEFAULT 0,
+                    last_error TEXT,
+                    extra_data TEXT,
+                    created_at VARCHAR(50) NOT NULL,
+                    updated_at VARCHAR(50),
+                    PRIMARY KEY (id),
+                    INDEX idx_pma_due (status, execute_at),
+                    INDEX idx_pma_guild_user (guild_id, user_id)
+                ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+                """,
+                (),
+            )
+            self._execute(
+                """
+                CREATE TABLE IF NOT EXISTS log_outbox (
+                    id BIGINT NOT NULL AUTO_INCREMENT,
+                    guild_id BIGINT NOT NULL,
+                    log_type VARCHAR(50) NOT NULL,
+                    channel_id BIGINT,
+                    payload TEXT NOT NULL,
+                    status VARCHAR(20) DEFAULT 'pending',
+                    attempts INT DEFAULT 0,
+                    last_error TEXT,
+                    created_at VARCHAR(50) NOT NULL,
+                    updated_at VARCHAR(50),
+                    sent_at VARCHAR(50),
+                    PRIMARY KEY (id),
+                    INDEX idx_log_outbox_due (status, created_at),
+                    INDEX idx_log_outbox_guild (guild_id)
+                ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+                """,
+                (),
+            )
+
+        for sql in (
+            "CREATE INDEX IF NOT EXISTS idx_mod_actions_case ON mod_actions (guild_id, case_number)",
+            "CREATE INDEX IF NOT EXISTS idx_mod_actions_status ON mod_actions (guild_id, status)",
+            "CREATE INDEX IF NOT EXISTS idx_pma_due ON pending_moderation_actions (status, execute_at)",
+            "CREATE INDEX IF NOT EXISTS idx_pma_guild_user ON pending_moderation_actions (guild_id, user_id)",
+            "CREATE INDEX IF NOT EXISTS idx_log_outbox_due ON log_outbox (status, created_at)",
+            "CREATE INDEX IF NOT EXISTS idx_log_outbox_guild ON log_outbox (guild_id)",
+        ):
+            try:
+                if self.db_type == "mariadb" and "IF NOT EXISTS" in sql:
+                    continue
+                self._execute(sql, ())
+            except Exception:
+                pass
+
+        self._backfill_case_numbers()
+
+    def _backfill_case_numbers(self) -> None:
+        """Asigna case_number por servidor a acciones antiguas sin número."""
+        try:
+            rows = self._fetchall(
+                "SELECT id, guild_id FROM mod_actions "
+                "WHERE case_number IS NULL ORDER BY guild_id ASC, created_at ASC, id ASC"
+            )
+        except Exception:
+            return
+        next_by_guild: Dict[int, int] = {}
+        for row in rows:
+            guild_id = int(row["guild_id"])
+            if guild_id not in next_by_guild:
+                current = self._fetchone(
+                    "SELECT MAX(case_number) AS max_case FROM mod_actions WHERE guild_id = ?",
+                    (guild_id,),
+                )
+                next_by_guild[guild_id] = int(current.get("max_case") or 0) + 1 if current else 1
+            case_number = next_by_guild[guild_id]
+            next_by_guild[guild_id] += 1
+            try:
+                self._execute(
+                    "UPDATE mod_actions SET case_number = ?, status = COALESCE(status, 'active'), "
+                    "updated_at = COALESCE(updated_at, created_at) WHERE id = ?",
+                    (case_number, row["id"]),
+                )
+            except Exception:
+                pass
+
     def _has_column(self, table: str, column: str) -> bool:
         """Comprueba si una tabla tiene una columna (multi-DB)."""
         try:
@@ -2132,6 +2317,13 @@ class DatabaseManager:
     def clear_warns(self, user_id: int, guild_id: int) -> None:
         self._upsert_user(user_id, guild_id, warns=0)
 
+    def decrement_warn(self, user_id: int, guild_id: int) -> int:
+        """Resta un warn activo sin bajar de cero y retorna el nuevo total."""
+        current = self.get_user(user_id, guild_id)
+        new_count = max(0, int(current.get("warns") or 0) - 1)
+        self._upsert_user(user_id, guild_id, warns=new_count)
+        return new_count
+
     def set_mute(
         self, user_id: int, guild_id: int, duration_secs: Optional[int]
     ) -> None:
@@ -2162,20 +2354,307 @@ class DatabaseManager:
         action_type: str,
         reason: str = "Sin razón especificada",
         extra: Optional[Dict] = None,
-    ) -> None:
+        *,
+        extra_data: Optional[Any] = None,
+        status: str = "active",
+        evidence_url: Optional[str] = None,
+        duration_seconds: Optional[int] = None,
+        expires_at: Optional[str] = None,
+        parent_case_id: Optional[int] = None,
+    ) -> int:
+        """Registra una acción de moderación y retorna el ID/case interno.
+
+        Mantiene compatibilidad con los call sites antiguos: los parámetros
+        extra siguen siendo opcionales y los nuevos campos se pasan solo por
+        keyword. Cada guild recibe `case_number` incremental propio.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        case_number = self._next_case_number(guild_id)
+        if extra_data is not None:
+            stored_extra = extra_data if isinstance(extra_data, str) else json.dumps(extra_data, ensure_ascii=False)
+        else:
+            stored_extra = json.dumps(extra, ensure_ascii=False) if extra else None
         self._execute(
             "INSERT INTO mod_actions "
-            "(guild_id, target_id, moderator_id, action_type, reason, extra_data, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "(guild_id, target_id, moderator_id, action_type, reason, extra_data, created_at, "
+            "case_number, status, evidence_url, duration_seconds, expires_at, parent_case_id, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 guild_id,
                 target_id,
                 moderator_id,
                 action_type,
                 reason,
-                json.dumps(extra, ensure_ascii=False) if extra else None,
-                datetime.now(timezone.utc).isoformat(),
+                stored_extra,
+                now,
+                case_number,
+                status,
+                evidence_url,
+                duration_seconds,
+                expires_at,
+                parent_case_id,
+                now,
             ),
+        )
+
+        row = self._fetchone(
+            "SELECT id FROM mod_actions WHERE guild_id = ? AND case_number = ?",
+            (guild_id, case_number),
+        )
+        return int(row["id"]) if row else 0
+
+    def _next_case_number(self, guild_id: int) -> int:
+        row = self._fetchone(
+            "SELECT MAX(case_number) AS max_case FROM mod_actions WHERE guild_id = ?",
+            (guild_id,),
+        )
+        return int(row.get("max_case") or 0) + 1 if row else 1
+
+    def get_case(self, guild_id: int, case_ref: int) -> Optional[Dict]:
+        """Obtiene un caso público por case_number, con fallback a id interno."""
+        row = self._fetchone(
+            "SELECT * FROM mod_actions WHERE guild_id = ? AND case_number = ? LIMIT 1",
+            (guild_id, case_ref),
+        )
+        if row:
+            return row
+        return self._fetchone(
+            "SELECT * FROM mod_actions WHERE guild_id = ? AND id = ? LIMIT 1",
+            (guild_id, case_ref),
+        )
+
+    def get_case_by_id(self, guild_id: int, case_id: int) -> Optional[Dict]:
+        """Obtiene un caso por ID interno exacto para jobs/schedulers."""
+        return self._fetchone(
+            "SELECT * FROM mod_actions WHERE guild_id = ? AND id = ? LIMIT 1",
+            (guild_id, case_id),
+        )
+
+    def update_case(self, guild_id: int, case_ref: int, **kwargs) -> Optional[Dict]:
+        """Actualiza campos editables de un caso manteniendo auditoría básica."""
+        allowed = {"reason", "evidence_url", "status", "extra_data", "parent_case_id"}
+        payload = {k: v for k, v in kwargs.items() if k in allowed}
+        if not payload:
+            return self.get_case(guild_id, case_ref)
+        case = self.get_case(guild_id, case_ref)
+        if not case:
+            return None
+        payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+        assignments = ", ".join(f"{k} = ?" for k in payload)
+        self._execute(
+            f"UPDATE mod_actions SET {assignments} WHERE id = ? AND guild_id = ?",
+            tuple(payload.values()) + (case["id"], guild_id),
+        )
+        return self.get_case_by_id(guild_id, int(case["id"]))
+
+    def update_case_by_id(self, guild_id: int, case_id: int, **kwargs) -> Optional[Dict]:
+        """Actualiza un caso usando ID interno exacto, evitando colisiones con case_number."""
+        allowed = {"reason", "evidence_url", "status", "extra_data", "parent_case_id"}
+        payload = {k: v for k, v in kwargs.items() if k in allowed}
+        case = self.get_case_by_id(guild_id, case_id)
+        if not case:
+            return None
+        if not payload:
+            return case
+        payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+        assignments = ", ".join(f"{k} = ?" for k in payload)
+        self._execute(
+            f"UPDATE mod_actions SET {assignments} WHERE id = ? AND guild_id = ?",
+            tuple(payload.values()) + (case_id, guild_id),
+        )
+        return self.get_case_by_id(guild_id, case_id)
+
+    def get_active_moderations(self, guild_id: int, limit: int = 100) -> List[Dict]:
+        return self._fetchall(
+            "SELECT * FROM mod_actions WHERE guild_id = ? AND status = 'active' "
+            "AND action_type IN ('TEMPBAN', 'MUTE', 'AUTO_MUTE', 'HARDMUTE', 'TIMEOUT') "
+            "ORDER BY expires_at ASC, created_at DESC LIMIT ?",
+            (guild_id, limit),
+        )
+
+    def list_cases(
+        self,
+        guild_id: int,
+        user_id: Optional[int] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> List[Dict]:
+        if user_id is not None:
+            return self._fetchall(
+                "SELECT * FROM mod_actions WHERE guild_id = ? AND target_id = ? "
+                "ORDER BY case_number DESC, created_at DESC LIMIT ? OFFSET ?",
+                (guild_id, user_id, limit, offset),
+            )
+        return self._fetchall(
+            "SELECT * FROM mod_actions WHERE guild_id = ? "
+            "ORDER BY case_number DESC, created_at DESC LIMIT ? OFFSET ?",
+            (guild_id, limit, offset),
+        )
+
+    def add_pending_moderation_action(
+        self,
+        guild_id: int,
+        user_id: int,
+        action_type: str,
+        execute_at: str,
+        case_id: Optional[int] = None,
+        extra: Optional[Dict] = None,
+    ) -> int:
+        now = datetime.now(timezone.utc).isoformat()
+        self._execute(
+            "INSERT INTO pending_moderation_actions "
+            "(guild_id, user_id, action_type, case_id, execute_at, status, attempts, extra_data, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)",
+            (
+                guild_id,
+                user_id,
+                action_type,
+                case_id,
+                execute_at,
+                json.dumps(extra, ensure_ascii=False) if extra else None,
+                now,
+                now,
+            ),
+        )
+        row = self._fetchone(
+            "SELECT id FROM pending_moderation_actions WHERE guild_id = ? AND user_id = ? "
+            "AND action_type = ? AND execute_at = ? ORDER BY id DESC LIMIT 1",
+            (guild_id, user_id, action_type, execute_at),
+        )
+        return int(row["id"]) if row else 0
+
+    def get_due_pending_moderation_actions(self, now_iso: str, limit: int = 100) -> List[Dict]:
+        return self._fetchall(
+            "SELECT * FROM pending_moderation_actions WHERE status = 'pending' AND execute_at <= ? "
+            "ORDER BY execute_at ASC LIMIT ?",
+            (now_iso, limit),
+        )
+
+    def get_pending_moderation_actions(self, guild_id: int, limit: int = 100) -> List[Dict]:
+        return self._fetchall(
+            "SELECT * FROM pending_moderation_actions WHERE guild_id = ? AND status = 'pending' "
+            "ORDER BY execute_at ASC LIMIT ?",
+            (guild_id, limit),
+        )
+
+    def update_pending_moderation_action(self, action_id: int, status: str, last_error: Optional[str] = None) -> None:
+        self._execute(
+            "UPDATE pending_moderation_actions SET status = ?, last_error = ?, attempts = attempts + 1, "
+            "updated_at = ? WHERE id = ?",
+            (status, last_error, datetime.now(timezone.utc).isoformat(), action_id),
+        )
+
+    def has_pending_moderation_action(
+        self,
+        guild_id: int,
+        user_id: int,
+        action_types: Optional[List[str]] = None,
+    ) -> bool:
+        if action_types:
+            placeholders = ", ".join("?" for _ in action_types)
+            row = self._fetchone(
+                "SELECT id FROM pending_moderation_actions "
+                "WHERE guild_id = ? AND user_id = ? AND status = 'pending' "
+                f"AND action_type IN ({placeholders}) LIMIT 1",
+                (guild_id, user_id, *action_types),
+            )
+        else:
+            row = self._fetchone(
+                "SELECT id FROM pending_moderation_actions "
+                "WHERE guild_id = ? AND user_id = ? AND status = 'pending' LIMIT 1",
+                (guild_id, user_id),
+            )
+        return bool(row)
+
+    def cancel_pending_moderation_actions(
+        self,
+        guild_id: int,
+        user_id: int,
+        action_types: Optional[List[str]] = None,
+        case_id: Optional[int] = None,
+        reason: str = "cancelled",
+    ) -> int:
+        now = datetime.now(timezone.utc).isoformat()
+        where_params: List[Any] = [guild_id, user_id]
+        where = "guild_id = ? AND user_id = ? AND status = 'pending'"
+        if action_types:
+            placeholders = ", ".join("?" for _ in action_types)
+            where += f" AND action_type IN ({placeholders})"
+            where_params.extend(action_types)
+        if case_id is not None:
+            where += " AND case_id = ?"
+            where_params.append(case_id)
+
+        rows = self._fetchall(
+            f"SELECT id FROM pending_moderation_actions WHERE {where}",
+            tuple(where_params),
+        )
+        if not rows:
+            return 0
+
+        self._execute(
+            "UPDATE pending_moderation_actions SET status = 'cancelled', last_error = ?, updated_at = ? "
+            f"WHERE {where}",
+            (reason, now, *where_params),
+        )
+        return len(rows)
+
+    def revoke_active_moderations(
+        self,
+        guild_id: int,
+        user_id: int,
+        action_types: List[str],
+        status: str = "revoked",
+    ) -> List[Dict]:
+        if not action_types:
+            return []
+        placeholders = ", ".join("?" for _ in action_types)
+        rows = self._fetchall(
+            "SELECT * FROM mod_actions WHERE guild_id = ? AND target_id = ? AND status = 'active' "
+            f"AND action_type IN ({placeholders})",
+            (guild_id, user_id, *action_types),
+        )
+        now = datetime.now(timezone.utc).isoformat()
+        for row in rows:
+            self._execute(
+                "UPDATE mod_actions SET status = ?, updated_at = ? WHERE id = ? AND guild_id = ?",
+                (status, now, row["id"], guild_id),
+            )
+        return rows
+
+    def enqueue_log_outbox(
+        self,
+        guild_id: int,
+        log_type: str,
+        payload: Dict,
+        channel_id: Optional[int] = None,
+    ) -> int:
+        now = datetime.now(timezone.utc).isoformat()
+        self._execute(
+            "INSERT INTO log_outbox (guild_id, log_type, channel_id, payload, status, attempts, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, 'pending', 0, ?, ?)",
+            (guild_id, log_type, channel_id, json.dumps(payload, ensure_ascii=False), now, now),
+        )
+        row = self._fetchone(
+            "SELECT id FROM log_outbox WHERE guild_id = ? AND log_type = ? AND created_at = ? "
+            "ORDER BY id DESC LIMIT 1",
+            (guild_id, log_type, now),
+        )
+        return int(row["id"]) if row else 0
+
+    def get_pending_log_outbox(self, limit: int = 50) -> List[Dict]:
+        return self._fetchall(
+            "SELECT * FROM log_outbox WHERE status = 'pending' ORDER BY created_at ASC LIMIT ?",
+            (limit,),
+        )
+
+    def mark_log_outbox(self, log_id: int, status: str, last_error: Optional[str] = None) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        sent_at = now if status == "sent" else None
+        self._execute(
+            "UPDATE log_outbox SET status = ?, last_error = ?, attempts = attempts + 1, "
+            "updated_at = ?, sent_at = COALESCE(?, sent_at) WHERE id = ?",
+            (status, last_error, now, sent_at, log_id),
         )
 
     def get_user_history(
@@ -2626,14 +3105,21 @@ class DatabaseManager:
 
     def set_tempban(
         self, guild_id: int, user_id: int, moderator_id: int,
-        reason: str, duration_secs: int,
+        reason: str, duration_secs: int, case_id: Optional[int] = None,
     ) -> int:
         now = datetime.now(timezone.utc).isoformat()
-        self._execute(
-            "INSERT INTO tempbans (guild_id, user_id, moderator_id, reason, ban_start, ban_duration, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (guild_id, user_id, moderator_id, reason, now, duration_secs, now),
-        )
+        if self._has_column("tempbans", "case_id"):
+            self._execute(
+                "INSERT INTO tempbans (guild_id, user_id, moderator_id, reason, ban_start, ban_duration, created_at, case_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (guild_id, user_id, moderator_id, reason, now, duration_secs, now, case_id),
+            )
+        else:
+            self._execute(
+                "INSERT INTO tempbans (guild_id, user_id, moderator_id, reason, ban_start, ban_duration, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (guild_id, user_id, moderator_id, reason, now, duration_secs, now),
+            )
         row = self._fetchone(
             "SELECT id FROM tempbans WHERE guild_id = ? AND user_id = ? ORDER BY id DESC LIMIT 1",
             (guild_id, user_id),
@@ -3981,20 +4467,79 @@ class DatabaseManager:
             "words": [],
             "action": "warn",
         },
+        "duplicate": {
+            "enabled": False,
+            "threshold": 3,
+            "window": 30,
+            "action": "warn",
+        },
+        "emoji_spam": {
+            "enabled": False,
+            "max_emojis": 10,
+            "action": "warn",
+        },
         "ignored": {
             "channels": [],
             "roles": [],
+            "exempt_admins": True,
         },
     }
+
+    def _normalize_automod_rules(self, rules: Any) -> Dict:
+        """Acepta reglas canónicas o payload legacy del dashboard y las normaliza."""
+        if rules is None:
+            rules = {}
+        if isinstance(rules, str):
+            try:
+                rules = json.loads(rules or "{}")
+            except json.JSONDecodeError:
+                rules = {}
+        if not isinstance(rules, dict):
+            rules = {}
+
+        normalized: Dict[str, Dict] = {}
+        for key, defaults in self.DEFAULT_AUTOMOD_RULES.items():
+            normalized[key] = defaults.copy()
+
+        for key, value in rules.items():
+            if key in {"words", "bannedWords", "banned_words"}:
+                target = "banned_words"
+            elif key in {"invites", "anti_invites", "antiInvites"}:
+                target = "links"
+            else:
+                target = key
+            if target not in normalized or not isinstance(value, dict):
+                continue
+
+            rule = value.copy()
+            if target == "caps" and "max_caps_percent" in rule and "min_percent" not in rule:
+                rule["min_percent"] = rule.pop("max_caps_percent")
+            if target == "duplicate" and "duplicate_threshold" in rule and "threshold" not in rule:
+                rule["threshold"] = rule.pop("duplicate_threshold")
+            if key == "spam" and "duplicate_threshold" in rule:
+                duplicate = normalized["duplicate"].copy()
+                duplicate.update({
+                    "enabled": bool(rule.get("enabled", True)),
+                    "threshold": rule.pop("duplicate_threshold"),
+                    "action": rule.get("action", duplicate.get("action", "warn")),
+                })
+                normalized["duplicate"] = duplicate
+            if target == "links" and key in {"invites", "anti_invites", "antiInvites"}:
+                rule.setdefault("block_invites", True)
+                rule.setdefault("block_all_urls", False)
+
+            merged = normalized[target].copy()
+            merged.update(rule)
+            normalized[target] = merged
+
+        return normalized
 
     def get_automod_config(self, guild_id: int) -> Dict:
         row = self._fetchone(
             "SELECT * FROM automod_config WHERE guild_id = ?", (guild_id,)
         )
         if row:
-            rules = json.loads(row.get("rules") or "{}")
-            for key, defaults in self.DEFAULT_AUTOMOD_RULES.items():
-                rules.setdefault(key, defaults.copy())
+            rules = self._normalize_automod_rules(row.get("rules") or {})
             return {
                 "guild_id": guild_id,
                 "enabled": int(row.get("enabled", 1) or 0),
@@ -4011,10 +4556,10 @@ class DatabaseManager:
         if enabled is not None:
             current["enabled"] = int(enabled)
         if rules is not None:
+            normalized = self._normalize_automod_rules(rules)
             for key, defaults in self.DEFAULT_AUTOMOD_RULES.items():
-                rule = rules.get(key, {})
                 merged = defaults.copy()
-                merged.update(rule)
+                merged.update(normalized.get(key, {}))
                 current["rules"][key] = merged
         self._upsert_config("automod_config", guild_id,
                             enabled=current["enabled"],

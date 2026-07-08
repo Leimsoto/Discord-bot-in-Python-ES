@@ -1,7 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
 import { apiGet, apiPatch } from "../lib/api";
-import { Icon } from "../lib/icons";
-import { SearchableSelect } from "./ui";
 import Toast from "./Toast";
 import { useSaveBar } from "../lib/SaveBarContext";
 
@@ -26,16 +24,21 @@ const RULE_META = {
     desc: "Bloquea enlaces no autorizados",
     icon: "fa-link",
     color: "#3b82f6"},
-  words: {
+  banned_words: {
     label: "Palabras prohibidas",
     desc: "Filtra mensajes con palabras de la lista negra",
     icon: "fa-comment-slash",
     color: "#8b5cf6"},
-  invites: {
-    label: "Anti-Invites",
-    desc: "Bloquea enlaces de invitación de Discord",
-    icon: "fa-paper-plane",
-    color: "#ec4899"}};
+  duplicate: {
+    label: "Mensajes repetidos",
+    desc: "Detecta repetición del mismo contenido en una ventana corta",
+    icon: "fa-copy",
+    color: "#ec4899"},
+  emoji_spam: {
+    label: "Spam de emojis",
+    desc: "Limita mensajes con demasiados emojis",
+    icon: "fa-face-grin-stars",
+    color: "#22c55e"}};
 
 export default function AutoMod({ selectedGuild: guildId }) {
   const [cfg, setCfg] = useState(null);
@@ -55,8 +58,8 @@ export default function AutoMod({ selectedGuild: guildId }) {
     try {
       const data = await apiGet(`/api/guilds/${guildId}/automod`);
       setCfg(data || { enabled: 1, rules: {} });
-    } catch {
-      showToast("Error cargando automod", "error");
+    } catch (e) {
+      showToast(e?.message || "Error cargando automod", "error");
     } finally {
       setLoading(false);
     }
@@ -103,11 +106,9 @@ export default function AutoMod({ selectedGuild: guildId }) {
     try {
       const payload = {
         ...cfg,
-        rules:
-          typeof cfg.rules === "object"
-            ? JSON.stringify(cfg.rules)
-            : cfg.rules};
-      await apiPatch(`/api/guilds/${guildId}/automod`, payload);
+        rules: typeof cfg.rules === "string" ? JSON.parse(cfg.rules || "{}") : cfg.rules};
+      const data = await apiPatch(`/api/guilds/${guildId}/automod`, payload);
+      if (data?.config) setCfg(data.config);
       setDirty(false);
       showToast("Configuración guardada");
     } catch (e) {
@@ -269,23 +270,23 @@ export default function AutoMod({ selectedGuild: guildId }) {
                   )}
                   {key === "caps" && isOn && (
                     <div className="config-item" style={{ marginBottom: 0 }}>
-                      <label>% máximo de mayúsculas</label>
+                      <label>% mínimo de mayúsculas para actuar</label>
                       <input
                         type="number"
                         min="30"
                         max="100"
-                        value={rule.max_caps_percent ?? 70}
+                        value={rule.min_percent ?? 70}
                         onChange={(e) =>
                           setRule(
                             key,
-                            "max_caps_percent",
+                            "min_percent",
                             parseInt(e.target.value)
                           )
                         }
                       />
                     </div>
                   )}
-                  {key === "words" && isOn && (
+                  {key === "banned_words" && isOn && (
                     <div className="config-item" style={{ marginBottom: 0 }}>
                       <label>Palabras prohibidas (separar con coma)</label>
                       <textarea
@@ -316,19 +317,61 @@ export default function AutoMod({ selectedGuild: guildId }) {
                   )}
                   {key === "spam" && isOn && (
                     <div className="config-item" style={{ marginBottom: 0 }}>
-                      <label>Mensajes duplicados antes de actuar</label>
+                      <label>Mensajes en ventana antes de warn</label>
                       <input
                         type="number"
                         min="2"
                         max="20"
-                        value={rule.duplicate_threshold ?? 4}
+                        value={rule.warn_threshold ?? 5}
                         onChange={(e) =>
                           setRule(
                             key,
-                            "duplicate_threshold",
+                            "warn_threshold",
                             parseInt(e.target.value)
                           )
                         }
+                      />
+                    </div>
+                  )}
+                  {key === "links" && isOn && (
+                    <div className="config-item" style={{ marginBottom: 0 }}>
+                      <label>
+                        <input
+                          type="checkbox"
+                          checked={rule.block_invites ?? true}
+                          onChange={(e) => setRule(key, "block_invites", e.target.checked)}
+                        /> Bloquear invitaciones de Discord
+                      </label>
+                      <label>
+                        <input
+                          type="checkbox"
+                          checked={!!rule.block_all_urls}
+                          onChange={(e) => setRule(key, "block_all_urls", e.target.checked)}
+                        /> Bloquear todos los links salvo whitelist
+                      </label>
+                    </div>
+                  )}
+                  {key === "duplicate" && isOn && (
+                    <div className="config-item" style={{ marginBottom: 0 }}>
+                      <label>Repeticiones máximas</label>
+                      <input
+                        type="number"
+                        min="2"
+                        max="20"
+                        value={rule.threshold ?? 3}
+                        onChange={(e) => setRule(key, "threshold", parseInt(e.target.value))}
+                      />
+                    </div>
+                  )}
+                  {key === "emoji_spam" && isOn && (
+                    <div className="config-item" style={{ marginBottom: 0 }}>
+                      <label>Máx. emojis por mensaje</label>
+                      <input
+                        type="number"
+                        min="3"
+                        max="100"
+                        value={rule.max_emojis ?? 10}
+                        onChange={(e) => setRule(key, "max_emojis", parseInt(e.target.value))}
                       />
                     </div>
                   )}

@@ -146,7 +146,7 @@ export default function Tickets({ selectedGuild: guildId }) {
     setCfg((p) => ({ ...p, [k]: v }));
     setDirty(true);
   };
-  const setId = (k) => (v) => set(k, v ? parseInt(v, 10) : null);
+  const setId = (k) => (v) => set(k, v ? String(v) : null);
 
   const save = async () => {
     setSaving(true);
@@ -295,7 +295,7 @@ export default function Tickets({ selectedGuild: guildId }) {
     setSendingPanel(true);
     try {
       await apiPost(`/api/guilds/${guildId}/tickets/send-panel`, {
-        channel_id: parseInt(panelChannel)});
+        channel_id: String(panelChannel)});
       showToast("Panel enviado");
     } catch (e) {
       showToast(e.message, "error");
@@ -857,7 +857,7 @@ function CategoryRow({ category, templates, guildId, onSave, onDelete, renderTem
         .map((q) => q.trim())
         .filter(Boolean),
       welcome_embed_template_key: draft.welcome_embed_template_key || null,
-      staff_role_id: draft.staff_role_id ? parseInt(draft.staff_role_id) : null};
+      staff_role_id: draft.staff_role_id ? String(draft.staff_role_id) : null};
     onSave(payload);
     setOpen(false);
   };

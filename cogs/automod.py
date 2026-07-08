@@ -38,6 +38,7 @@ Comandos slash
 La configuración detallada vive en el dashboard.
 """
 
+import asyncio
 import logging
 import re
 import time
@@ -151,7 +152,7 @@ class AutoMod(commands.Cog):
         self.bot = bot
         self.db = bot.db
         self.tracker = WindowTracker()
-        self._cleanup_task: Optional[discord.utils._MissingSentinel] = None
+        self._cleanup_task: Optional[asyncio.Task] = None
 
     async def cog_load(self):
         self._cleanup_task = self.bot.loop.create_task(self._cleanup_loop())
@@ -167,7 +168,7 @@ class AutoMod(commands.Cog):
                 next_run = datetime.now(timezone.utc) + timedelta(minutes=5)
                 await discord.utils.sleep_until(next_run.replace(microsecond=0))
                 self.tracker.cleanup()
-        except discord.utils._MissingSentinel:
+        except asyncio.CancelledError:
             return
 
     # ── Listener principal ──────────────────────────────────────────────────

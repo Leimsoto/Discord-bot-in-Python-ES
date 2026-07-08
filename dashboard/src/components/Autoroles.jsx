@@ -87,7 +87,7 @@ export default function Autoroles({ selectedGuild, onToast }) {
     if (!newJoinRoleId) return;
     setAdding(true);
     try {
-      await apiPost(`/api/guilds/${guildId}/autoroles/join`, { role_id: Number(newJoinRoleId) });
+      await apiPost(`/api/guilds/${guildId}/autoroles/join`, { role_id: String(newJoinRoleId) });
       setNewJoinRoleId(null);
       toast("success", "Rol agregado a auto-asignación");
       await load();
@@ -128,9 +128,11 @@ export default function Autoroles({ selectedGuild, onToast }) {
     setSavingPanel(true);
     try {
       await apiPost(`/api/guilds/${guildId}/autoroles/reactions`, {
-        message_id: Number(msgId),
-        channel_id: Number(panelChannelId),
-        mapping_data: JSON.stringify(parsed)});
+        message_id: msgId,
+        channel_id: String(panelChannelId),
+        // Enviar el JSON original: Python conserva enteros snowflake exactos;
+        // JSON.parse/JSON.stringify en el navegador redondea IDs grandes.
+        mapping_data: panelMapping});
       toast("success", "Panel guardado");
       setPanelMsgId("");
       setPanelChannelId(null);

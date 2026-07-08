@@ -10,7 +10,7 @@
  *   DELETE /api/guilds/{g}/autoresponses/{id}
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { apiGet, apiPost, apiPatch, apiDelete } from "../lib/api";
 import Toast from "./Toast";
 import { SearchableSelect } from "./ui";
@@ -191,7 +191,7 @@ export default function AutoResponses({ selectedGuild: guildId }) {
               <label>Canal (opcional)</label>
               <SearchableSelect
                 value={form.channel_id || ""}
-                onChange={(v) => setForm((f) => ({ ...f, channel_id: v ? parseInt(v, 10) : null }))}
+                onChange={(v) => setForm((f) => ({ ...f, channel_id: v ? String(v) : null }))}
                 endpoint={`/api/guilds/${guildId}/channels?type=text`}
                 itemsKey="channels"
                 placeholder="🌐 Todos los canales"

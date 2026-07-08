@@ -18,6 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
 from api.deps import get_db, require_guild_admin
+from api.snowflakes import coerce_snowflake, stringify_rows
 
 router = APIRouter(prefix="/api/guilds/{guild_id}/schedules", tags=["schedules"])
 
@@ -30,7 +31,7 @@ MAX_INTERVAL = 2_592_000
 
 class ScheduleCreate(BaseModel):
     name:             str
-    channel_id:       int
+    channel_id:       int | str
     content:          str = ""
     interval_seconds: int = Field(MIN_INTERVAL, ge=0, le=MAX_INTERVAL)
     schedule_mode:    Optional[str] = None  # "interval" | "cron"
@@ -44,7 +45,7 @@ class ScheduleCreate(BaseModel):
 
 
 class SchedulePatch(BaseModel):
-    channel_id:       Optional[int] = None
+    channel_id:       Optional[int | str] = None
     content:          Optional[str] = None
     interval_seconds: Optional[int] = Field(None, ge=0, le=MAX_INTERVAL)
     enabled:          Optional[int] = None
@@ -68,6 +69,10 @@ def _find_schedule(db, guild_id: int, ident) -> Optional[dict]:
         return next((s for s in schedules if s["name"] == str(ident)), None)
 
 
+def _schedule_payload(row: dict) -> dict:
+    return stringify_rows([row], ("guild_id", "channel_id", "creator_id"))[0]
+
+
 # ── Endpoints ────────────────────────────────────────────────────────────────
 
 @router.get("")
@@ -78,8 +83,8 @@ async def list_schedules(
 ):
     schedules = db.get_schedules(guild_id)
     return {
-        "guild_id": guild_id,
-        "schedules": schedules,
+        "guild_id": str(guild_id),
+        "schedules": stringify_rows(schedules, ("guild_id", "channel_id", "creator_id")),
         "count": len(schedules),
         "limits": {
             "max_schedules": MAX_SCHEDULES,
@@ -118,8 +123,9 @@ async def create_schedule(
         raise HTTPException(409, f"Ya existe un schedule llamado '{name}'")
 
     creator_id = int(user.get("user_id", 0)) if isinstance(user, dict) else 0
+    channel_id = coerce_snowflake(body.channel_id, "channel_id")
     db.create_schedule(
-        guild_id, name, int(body.channel_id), content,
+        guild_id, name, channel_id, content,
         int(body.interval_seconds or 0), creator_id,
         schedule_mode=mode,
         cron_hour=body.cron_hour,
@@ -128,7 +134,7 @@ async def create_schedule(
         timezone_name=body.timezone,
         message_data=body.message_data,
     )
-    return {"status": "created", "name": name}
+    return {"status": "created", "name": name, "channel_id": str(channel_id)}
 
 
 @router.patch("/{ident}")
@@ -145,13 +151,18 @@ async def patch_schedule(
         raise HTTPException(404, f"Schedule '{ident}' no encontrado en este servidor")
 
     update = body.model_dump(exclude_none=True)
+    if "channel_id" in update:
+        update["channel_id"] = coerce_snowflake(update["channel_id"], "channel_id")
     if "enabled" in update:
         update["enabled"] = 1 if int(update["enabled"]) else 0
     if not update:
         raise HTTPException(400, "Sin campos para actualizar")
 
     db.update_schedule(int(sched["id"]), **update)
-    return {"status": "ok", "schedule_id": int(sched["id"]), "updated": update}
+    updated = dict(update)
+    if "channel_id" in updated:
+        updated["channel_id"] = str(updated["channel_id"])
+    return {"status": "ok", "schedule_id": int(sched["id"]), "updated": updated}
 
 
 @router.post("/{ident}/toggle")
@@ -189,7 +200,7 @@ async def test_schedule(
     guild = bot.get_guild(guild_id)
     if not guild:
         raise HTTPException(404, "Servidor no encontrado")
-    channel = guild.get_channel(int(sched["channel_id"]))
+    channel = guild.get_channel(coerce_snowflake(sched["channel_id"], "channel_id"))
     if not channel or not isinstance(channel, discord.TextChannel):
         raise HTTPException(404, "Canal de texto no encontrado")
 

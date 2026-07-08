@@ -87,9 +87,9 @@ export default function Logs({ selectedGuild }) {
     try {
       const data = await apiGet(`/api/guilds/${guildId}/logging`);
       // Parse log_events from JSON string or default to all enabled
-      let events = {};
+      let events = Object.fromEntries(LOG_EVENTS.map((ev) => [ev.key, true]));
       if (data.log_events) {
-        try { events = JSON.parse(data.log_events); } catch { events = {}; }
+        try { events = { ...events, ...JSON.parse(data.log_events) }; } catch { /* keep defaults */ }
       }
       setLogCfg({ ...data, log_events_parsed: events });
     } catch { showToast('Error cargando config de logging', 'error'); }
@@ -118,10 +118,17 @@ export default function Logs({ selectedGuild }) {
   const saveConfig = async () => {
     setSaving(true);
     try {
-      await apiPatch(`/api/guilds/${guildId}/logging`, {
+      const res = await apiPatch(`/api/guilds/${guildId}/logging`, {
         serverlog_channel: logCfg.serverlog_channel,
         serverlog_enabled: logCfg.serverlog_enabled,
         log_events: JSON.stringify(logCfg.log_events_parsed || {})});
+      if (res?.config) {
+        setLogCfg((prev) => ({
+          ...prev,
+          ...res.config,
+          log_events_parsed: prev?.log_events_parsed || {},
+        }));
+      }
       setDirty(false);
       showToast('Configuración guardada');
     } catch (e) { showToast(e.message, 'error'); }
@@ -193,7 +200,7 @@ export default function Logs({ selectedGuild }) {
                 <label>Canal de Server Logs</label>
                 <SearchableSelect
                   value={logCfg.serverlog_channel || ''}
-                  onChange={v => setCfgField('serverlog_channel', v ? parseInt(v, 10) : null)}
+                  onChange={v => setCfgField('serverlog_channel', v ? String(v) : null)}
                   endpoint={`/api/guilds/${guildId}/channels`}
                   itemsKey="channels"
                   placeholder="Selecciona un canal…"

@@ -192,6 +192,43 @@ async def get_me(request: Request):
     }
 
 
+@router.get("/permissions/{guild_id}")
+async def get_permissions_debug(guild_id: int, request: Request):
+    """Diagnóstico seguro de permisos del usuario actual para un servidor.
+
+    Sirve para diferenciar 403 por token/JWT viejo, bot sin acceso al guild,
+    miembro no encontrado o falta real de permisos.
+    """
+    from api.deps import get_current_user_from_request, get_guild_admin_status
+
+    user = await get_current_user_from_request(request)
+    jwt_match = next(
+        (g for g in user.get("guilds", []) if int(g.get("id", 0)) == guild_id),
+        None,
+    )
+    jwt_permissions = int(jwt_match.get("permissions", 0)) if jwt_match else 0
+    jwt_allowed = bool(
+        user.get("is_dev_mode")
+        or user.get("is_master_admin")
+        or (jwt_match and (jwt_match.get("owner") or jwt_permissions & 0x8 or jwt_permissions & 0x20))
+    )
+    live = await get_guild_admin_status(request, guild_id, user)
+
+    return {
+        "guild_id": str(guild_id),
+        "user_id": str(user.get("user_id")),
+        "allowed": bool(jwt_allowed or live.get("allowed")),
+        "jwt": {
+            "has_guild": jwt_match is not None,
+            "allowed": jwt_allowed,
+            "owner": bool(jwt_match.get("owner")) if jwt_match else False,
+            "administrator": bool(jwt_permissions & 0x8),
+            "manage_guild": bool(jwt_permissions & 0x20),
+        },
+        "live": live,
+    }
+
+
 @router.post("/logout")
 async def logout():
     """Cierra sesión (el token JWT se invalida en el cliente)."""

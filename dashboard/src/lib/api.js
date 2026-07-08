@@ -67,16 +67,56 @@ async function requestJson(path, options = {}) {
 
   if (response.status === 401) {
     localStorage.removeItem('botES_token');
+    sessionStorage.removeItem('botES_guilds_cache');
+    sessionStorage.removeItem('botES_user_cache');
     window.location.href = '/';
     throw new Error('No autorizado');
   }
 
   if (!response.ok) {
-    const errBody = await response.json().catch(() => ({}));
-    throw new Error(errBody?.detail || `Error ${response.status}`);
+    const rawBody = await response.text().catch(() => '');
+    let errBody;
+    try {
+      errBody = rawBody ? JSON.parse(rawBody) : {};
+    } catch {
+      errBody = { detail: rawBody.slice(0, 500) };
+    }
+    let permissionDebug = null;
+    if (response.status === 403) {
+      getCache.clear();
+      sessionStorage.removeItem('botES_guilds_cache');
+      sessionStorage.removeItem('botES_user_cache');
+      permissionDebug = await fetchPermissionDebug(path, token);
+      console.warn('[CatBot API] 403', { path, detail: errBody?.detail, permissionDebug });
+    }
+    const detail = errBody?.detail;
+    const debugReason = permissionDebug?.live?.reason || permissionDebug?.jwt?.reason;
+    const message = typeof detail === 'string'
+      ? detail
+      : detail?.message || detail?.reason || debugReason || `Error ${response.status}`;
+    throw new Error(message);
   }
 
   return response.json();
+}
+
+async function fetchPermissionDebug(path, token) {
+  if (!token) return null;
+  const guildMatch = path.match(/\/api\/(?:guilds|moderation)\/(\d+)/);
+  const guildId = guildMatch?.[1];
+  if (!guildId || path.includes('/api/auth/permissions/')) return null;
+  try {
+    const response = await fetch(`/api/auth/permissions/${guildId}`, {
+      credentials: 'include',
+      headers: {
+        Accept: 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+    });
+    return await response.json();
+  } catch {
+    return null;
+  }
 }
 
 export async function apiGet(path, options = {}) {

@@ -24,6 +24,27 @@ from database import DatabaseManager
 load_dotenv()
 
 # ── Logging ──────────────────────────────────────────────────────────────────
+class DiscordVoiceReconnectFilter(logging.Filter):
+    """Baja ruido de reconnects normales del websocket de voz.
+
+    discord.py registra los cierres 1006 del voice websocket como ERROR con
+    traceback aunque luego reconecta automáticamente. Mantenerlo como WARNING
+    evita que parezca un fallo fatal y conserva la señal en logs.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if (
+            record.name == "discord.voice_state"
+            and record.levelno >= logging.ERROR
+            and str(record.getMessage()).startswith("Disconnected from voice... Reconnecting")
+        ):
+            record.levelno = logging.WARNING
+            record.levelname = "WARNING"
+            record.exc_info = None
+            record.exc_text = None
+        return True
+
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)-8s] %(name)s: %(message)s",
@@ -33,6 +54,7 @@ logging.basicConfig(
         logging.StreamHandler(),
     ],
 )
+logging.getLogger("discord.voice_state").addFilter(DiscordVoiceReconnectFilter())
 logger = logging.getLogger("Bot")
 
 # ── Intents ───────────────────────────────────────────────────────────────────
@@ -157,12 +179,8 @@ class BotES(commands.Bot):
             self.user,
             len(self.guilds),
         )
-        await self.change_presence(
-            activity=discord.Activity(
-                type=discord.ActivityType.watching,
-                name="patrullando el servidor 🐾",
-            )
-        )
+        # No forzamos actividad/presencia en el perfil del bot.
+        # La radio publica su estado únicamente en el canal de voz donde reproduce.
 
     async def on_app_command_error(
         self,
@@ -198,10 +216,15 @@ class BotES(commands.Bot):
             logger.error("Error de comando no manejado: %s", error, exc_info=True)
             msg = line("error", "Algo inesperado pasó. El gato se está reorganizando.")
 
-        if not interaction.response.is_done():
-            await interaction.response.send_message(msg, ephemeral=True)
-        else:
-            await interaction.followup.send(msg, ephemeral=True)
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.send_message(msg, ephemeral=True)
+            else:
+                await interaction.followup.send(msg, ephemeral=True)
+        except discord.NotFound:
+            logger.warning("No se pudo responder error global: interacción expirada o desconocida")
+        except discord.HTTPException as exc:
+            logger.warning("No se pudo responder error global: %s", exc)
 
     async def on_command_error(
         self, ctx: commands.Context, error: commands.CommandError
@@ -221,8 +244,15 @@ def main() -> None:
         logger.critical("TOKEN no encontrado en el archivo .env")
         raise SystemExit(1)
 
+    api_host = os.getenv("API_HOST", "0.0.0.0")
+    try:
+        api_port = int(os.getenv("API_PORT", "8080"))
+    except ValueError:
+        logger.warning("API_PORT inválido en .env; usando 8080")
+        api_port = 8080
+
     bot = BotES()
-    iniciar_api(db=bot.db, bot=bot)
+    iniciar_api(db=bot.db, bot=bot, host=api_host, port=api_port)
 
     try:
         bot.run(token, log_handler=None)  # log_handler=None para usar nuestro logging

@@ -21,10 +21,75 @@ logger = logging.getLogger(__name__)
 class Logging(commands.Cog):
     """Logs server events to a configurable channel."""
 
+    EVENT_ALIASES = {
+        "bulk_message_delete": ("bulk_message_delete", "message_delete"),
+        "member_update": ("member_update", "role_change", "nickname_changes", "role_changes"),
+        "voice_state_update": ("voice_state_update", "voice_join", "voice_leave", "voice_join_leave"),
+        "member_unban": ("member_unban", "member_ban"),
+    }
+
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.db = bot.db  # type: ignore
         self._last_log: dict[int, float] = {}
+
+    @classmethod
+    def _event_enabled(cls, raw, event_name: str) -> bool:
+        aliases = cls.EVENT_ALIASES.get(event_name, (event_name,))
+        if raw is None:
+            return True
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                return True
+        if isinstance(raw, dict):
+            if not raw:
+                return True
+            return any(bool(raw.get(key)) for key in aliases)
+        if isinstance(raw, list):
+            return any(key in raw for key in aliases)
+        return True
+
+    def _nearby_messageable_channel(self, guild: discord.Guild, channel_id: int):
+        candidates = [
+            ch
+            for ch in getattr(guild, "channels", [])
+            if callable(getattr(ch, "send", None)) and abs(int(ch.id) - int(channel_id)) <= 4096
+        ]
+        return candidates[0] if len(candidates) == 1 else None
+
+    async def _resolve_serverlog_channel(self, guild: discord.Guild, raw_channel_id):
+        try:
+            channel_id = int(raw_channel_id)
+        except (TypeError, ValueError):
+            return None, raw_channel_id, "invalid_channel_id"
+
+        channel = guild.get_channel(channel_id)
+        if callable(getattr(channel, "send", None)):
+            return channel, channel.id, None
+
+        repaired = self._nearby_messageable_channel(guild, channel_id)
+        if repaired is not None:
+            logger.warning(
+                "serverlog channel_id redondeado reparado en %s: %s -> %s",
+                guild.name,
+                channel_id,
+                repaired.id,
+            )
+            try:
+                self.db.set_server_config(guild.id, serverlog_channel=repaired.id)
+            except Exception:
+                logger.debug("No se pudo persistir serverlog_channel reparado", exc_info=True)
+            return repaired, repaired.id, None
+
+        try:
+            fetched = await guild.fetch_channel(channel_id)
+            if callable(getattr(fetched, "send", None)):
+                return fetched, fetched.id, None
+            return fetched, channel_id, "target_is_not_messageable"
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException) as exc:
+            return None, channel_id, str(exc)
 
     async def _send_log(self, guild: discord.Guild, embed: discord.Embed, event_name: str) -> None:
         srv_cfg = self.db.get_server_config(guild.id)
@@ -32,29 +97,23 @@ class Logging(commands.Cog):
             return
 
         raw = srv_cfg.get("log_events", "[]")
-        if isinstance(raw, str):
-            try:
-                enabled = json.loads(raw)
-            except (json.JSONDecodeError, TypeError):
-                enabled = []
-        else:
-            enabled = raw if isinstance(raw, list) else []
-
-        if not isinstance(enabled, list) or event_name not in enabled:
+        if not self._event_enabled(raw, event_name):
             return
 
         ch_id = srv_cfg.get("serverlog_channel")
         if not ch_id:
             return
 
-        channel = guild.get_channel(ch_id)
-        if not isinstance(channel, discord.TextChannel):
-            logger.warning("serverlog channel inválido en %s (%s)", guild.name, ch_id)
+        channel, resolved_ch_id, resolve_error = await self._resolve_serverlog_channel(guild, ch_id)
+        if channel is None or not callable(getattr(channel, "send", None)):
+            logger.warning("serverlog channel no accesible en %s (%s): %s", guild.name, ch_id, resolve_error)
+            self._enqueue_serverlog_outbox(guild, embed, event_name, resolved_ch_id or ch_id, resolve_error or "channel_unavailable")
             return
 
         now = time.time()
         last = self._last_log.get(guild.id, 0.0)
         if now - last < 2.0:
+            self._enqueue_serverlog_outbox(guild, embed, event_name, resolved_ch_id, "rate_limited")
             return
         self._last_log[guild.id] = now
 
@@ -62,8 +121,33 @@ class Logging(commands.Cog):
             await channel.send(embed=embed)
         except discord.Forbidden:
             logger.warning("Sin permisos para enviar serverlog en %s", guild.name)
+            self._enqueue_serverlog_outbox(guild, embed, event_name, resolved_ch_id, "missing_send_messages")
         except discord.HTTPException as exc:
             logger.warning("Error enviando serverlog en %s: %s", guild.name, exc)
+            self._enqueue_serverlog_outbox(guild, embed, event_name, resolved_ch_id, str(exc))
+
+    def _enqueue_serverlog_outbox(
+        self,
+        guild: discord.Guild,
+        embed: discord.Embed,
+        event_name: str,
+        channel_id,
+        error: str,
+    ) -> None:
+        try:
+            self.db.enqueue_log_outbox(
+                guild.id,
+                event_name,
+                {
+                    "embed": embed.to_dict(),
+                    "source": "logging_cog",
+                    "event": event_name,
+                    "last_error": (error or "")[:500],
+                },
+                channel_id=int(channel_id),
+            )
+        except Exception as exc:
+            logger.warning("No se pudo encolar serverlog fallido en %s: %s", guild.name, exc)
 
     # ── Message events ──────────────────────────────────────────────────────
 
